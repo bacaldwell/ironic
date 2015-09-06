@@ -1044,6 +1044,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
                                 False,
+                                False,
                                 False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
@@ -1055,6 +1056,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
+                                False,
                                 False,
                                 True)
         with open(fname, 'r') as f:
@@ -1068,6 +1070,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
                                 '0x12345678',
                                 boot_mode,
                                 True,
+                                False,
                                 False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
@@ -1079,7 +1082,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
-                                False, True)
+                                False, True, False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_PXECONF_TRUSTED_BOOT, pxeconf)
@@ -1091,6 +1094,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
+                                False,
                                 False,
                                 False)
         with open(fname, 'r') as f:
@@ -1105,6 +1109,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
                                 False,
+                                False,
                                 True)
         with open(fname, 'r') as f:
             pxeconf = f.read()
@@ -1118,6 +1123,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
                                 '0x12345678',
                                 boot_mode,
                                 True,
+                                False,
                                 False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
@@ -1129,6 +1135,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
+                                False,
                                 False,
                                 False)
         with open(fname, 'r') as f:
@@ -1142,6 +1149,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
                                 '0x12345678',
                                 boot_mode,
                                 True,
+                                False,
                                 False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
@@ -1153,6 +1161,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
+                                False,
                                 False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
@@ -1164,6 +1173,8 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '0x12345678',
                                 boot_mode,
+                                False,
+                                False,
                                 True)
         with open(fname, 'r') as f:
             pxeconf = f.read()
