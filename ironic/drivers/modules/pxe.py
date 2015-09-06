@@ -211,6 +211,11 @@ def _get_instance_image_info(node, ctx):
     if not (i_info.get('kernel') and i_info.get('ramdisk')):
         glance_service = service.GlanceImageService(version=1, context=ctx)
         iproperties = glance_service.show(d_info['image_source'])['properties']
+
+        kernel_cmdline = iproperties.get('kernel_cmdline')
+        if kernel_cmdline:
+            i_info['kernel_cmdline'] = kernel_cmdline
+
         for label in labels:
             i_info[label] = str(iproperties[label + '_id'])
         node.instance_info = i_info
@@ -438,7 +443,15 @@ class PXEBoot(base.BootInterface):
 
         _parse_driver_info(node)
         d_info = _parse_instance_info(node)
-        if node.driver_internal_info.get('is_whole_disk_image'):
+
+        iwdi = node.driver_internal_info.get('is_whole_disk_image')
+        local_boot = iscsi_deploy.get_boot_option(node) == "local"
+        if (iwdi or local_boot) and node.instance_info.get('kernel_cmdline'):
+            raise exception.InvalidParameterValue(
+                _("Conflict: Custom kernel command line (kernel_cmdline) "
+                  "does not work with whole disk images or local boot."))
+
+        if iwdi:
             props = []
         elif service_utils.is_glance_image(d_info['image_source']):
             props = ['kernel_id', 'ramdisk_id']
@@ -569,10 +582,12 @@ class PXEBoot(base.BootInterface):
             else:
                 pxe_config_path = pxe_utils.get_pxe_config_file_path(
                     task.node.uuid)
+                custom_kernel_cmdline = 'kernel_cmdline' in node.instance_info
                 deploy_utils.switch_pxe_config(
                     pxe_config_path, root_uuid_or_disk_id,
                     deploy_utils.get_boot_mode_for_deploy(node),
-                    iwdi, deploy_utils.is_trusted_boot_requested(node))
+                    iwdi, deploy_utils.is_trusted_boot_requested(node),
+                    custom_kernel_cmdline)
                 # In case boot mode changes from bios to uefi, boot device
                 # order may get lost in some platforms. Better to re-apply
                 # boot device.
