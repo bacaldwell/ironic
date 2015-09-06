@@ -201,7 +201,9 @@ class PXEPrivateMethodsTestCase(db_base.DbTestCase):
                        autospec=True)
     def _test__get_instance_image_info(self, show_mock):
         properties = {'properties': {u'kernel_id': u'instance_kernel_uuid',
-                      u'ramdisk_id': u'instance_ramdisk_uuid'}}
+                                     u'ramdisk_id': u'instance_ramdisk_uuid',
+                                     u'kernel_cmdline':
+                                     u'root=/dev/mapper/os-root ro text'}}
 
         expected_info = {'ramdisk':
                          ('instance_ramdisk_uuid',
@@ -229,6 +231,8 @@ class PXEPrivateMethodsTestCase(db_base.DbTestCase):
                          self.node.instance_info.get('kernel'))
         self.assertEqual('instance_ramdisk_uuid',
                          self.node.instance_info.get('ramdisk'))
+        self.assertEqual('root=/dev/mapper/os-root ro text',
+                         self.node.instance_info.get('kernel_cmdline'))
 
     def test__get_instance_image_info(self):
         # Tests when 'is_whole_disk_image' exists in driver_internal_info
@@ -373,6 +377,9 @@ class PXEPrivateMethodsTestCase(db_base.DbTestCase):
             'tftp_server': tftp_server,
             'aki_path': 'no_kernel',
             'ari_path': 'no_ramdisk',
+            # Check that the custom kernel cmdline got merged with the
+            # pxe_append_params configuration option
+            'kernel_cmdline': 'ro root=fake-root test_param',
         }
 
         image_info = {'deploy_kernel': ('deploy_kernel',
@@ -618,7 +625,23 @@ class PXEBootTestCase(db_base.DbTestCase):
             self.assertRaises(exception.MissingParameterValue,
                               task.driver.boot.validate, task)
 
-    def test_validate_fail_missing_image_source(self):
+    def test_validate_whole_disk_image_custom_cmdline(self, mock_glance):
+        with task_manager.acquire(self.context, self.node.uuid,
+                                  shared=True) as task:
+            task.node.driver_internal_info['is_whole_disk_image'] = True
+            task.node.instance_info['kernel_cmdline'] = 'root=live:<URL> ro'
+            self.assertRaises(exception.InvalidParameterValue,
+                              task.driver.deploy.validate, task)
+
+    def test_validate_localboot_custom_cmdline(self, mock_glance):
+        with task_manager.acquire(self.context, self.node.uuid,
+                                  shared=True) as task:
+            task.node.instance_info['capabilities'] = {'boot_option': 'local'}
+            task.node.instance_info['kernel_cmdline'] = 'root=live:<URL> ro'
+            self.assertRaises(exception.InvalidParameterValue,
+                              task.driver.deploy.validate, task)
+
+    def test_validate_fail(self):
         info = dict(INST_INFO_DICT)
         del info['image_source']
         self.node.instance_info = json.dumps(info)
@@ -836,7 +859,7 @@ class PXEBootTestCase(db_base.DbTestCase):
             provider_mock.update_dhcp.assert_called_once_with(task, dhcp_opts)
             switch_pxe_config_mock.assert_called_once_with(
                 pxe_config_path, "30212642-09d3-467f-8e09-21685826ab50",
-                'bios', False, False)
+                'bios', False, False, False)
             set_boot_device_mock.assert_called_once_with(task,
                                                          boot_devices.PXE)
 

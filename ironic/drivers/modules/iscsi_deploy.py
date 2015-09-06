@@ -211,6 +211,7 @@ def parse_instance_info(node):
 
     i_info['ephemeral_format'] = info.get('ephemeral_format')
     i_info['configdrive'] = info.get('configdrive')
+    i_info['kernel_cmdline'] = info.get('kernel_cmdline')
 
     if i_info['ephemeral_gb'] and not i_info['ephemeral_format']:
         i_info['ephemeral_format'] = CONF.pxe.default_ephemeral_format
@@ -324,6 +325,11 @@ def get_deploy_info(node, **kwargs):
 
     if is_whole_disk_image:
         return params
+
+    # NOTE(lucasagomes): If we have a custom kernel command
+    # line we should not try to figure out the UUID of the root
+    # partition.
+    params['skip_block_uuid'] = bool(i_info.get('kernel_cmdline'))
 
     # configdrive and ephemeral_format are nullable
     params['ephemeral_format'] = i_info.get('ephemeral_format')
@@ -521,6 +527,16 @@ def build_deploy_ramdisk_options(node):
         # NOTE: The below entry is a temporary workaround for bug/1433812
         'coreos.configdrive': 0,
     }
+
+    kernel_cmdline = node.instance_info.get('kernel_cmdline')
+    if kernel_cmdline:
+        # Merge both kernel cmdlines to avoid duplicated options, also
+        # make sure that the options specified in the custom kernel command
+        # line take precedence over the ones in pxe_append_params
+        if CONF.pxe.pxe_append_params:
+            kernel_cmdline = utils.merge_kernel_cmdline(
+                kernel_cmdline, CONF.pxe.pxe_append_params)
+        deploy_options['kernel_cmdline'] = kernel_cmdline
 
     root_device = deploy_utils.parse_root_device_hints(node)
     if root_device:
