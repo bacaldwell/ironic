@@ -285,3 +285,22 @@ class PXEAndMSFTOCSDriver(base.BaseDriver):
         self.deploy = pxe.PXEDeploy()
         self.management = msftocs_management.MSFTOCSManagement()
         self.vendor = pxe.VendorPassthru()
+
+class PXEAndDisklessDriver(base.BaseDriver):
+    """PXE + Diskless driver.
+
+    This driver implements the `core` functionality, combining
+    :class:`ironic.drivers.ipmi.IPMI` for power on/off and reboot with
+    :class:`ironic.drivers.modules.diskless.DisklessDeploy` for image deployment.
+    Implementations are in those respective classes; this class is merely the
+    glue between them.
+    """
+
+    def __init__(self):
+        self.power = ipmitool.IPMIPower()
+        self.console = ipmitool.IPMIShellinaboxConsole()
+        self.deploy = diskless_deploy.DisklessPXEDeploy()
+        self.management = ipmitool.IPMIManagement()
+#        self.vendor = pxe.VendorPassthru()
+#        self.inspect = discoverd.DiscoverdInspect.create_if_enabled(
+#            'PXEAndIPMIToolDriver')
