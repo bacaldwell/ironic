@@ -445,7 +445,7 @@ class PXEBoot(base.BootInterface):
         d_info = _parse_instance_info(node)
 
         iwdi = node.driver_internal_info.get('is_whole_disk_image')
-        local_boot = iscsi_deploy.get_boot_option(node) == "local"
+        local_boot = deploy_utils.get_boot_option(node) == "local"
         if (iwdi or local_boot) and node.instance_info.get('kernel_cmdline'):
             raise exception.InvalidParameterValue(
                 _("Conflict: Custom kernel command line (kernel_cmdline) "
@@ -586,8 +586,8 @@ class PXEBoot(base.BootInterface):
                 deploy_utils.switch_pxe_config(
                     pxe_config_path, root_uuid_or_disk_id,
                     deploy_utils.get_boot_mode_for_deploy(node),
-                    iwdi, deploy_utils.is_trusted_boot_requested(node),
-                    custom_kernel_cmdline)
+                    iwdi, custom_kernel_cmdline,
+                    deploy_utils.is_trusted_boot_requested(node))
                 # In case boot mode changes from bios to uefi, boot device
                 # order may get lost in some platforms. Better to re-apply
                 # boot device.

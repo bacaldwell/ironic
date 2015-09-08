@@ -859,7 +859,7 @@ class PXEBootTestCase(db_base.DbTestCase):
             provider_mock.update_dhcp.assert_called_once_with(task, dhcp_opts)
             switch_pxe_config_mock.assert_called_once_with(
                 pxe_config_path, "30212642-09d3-467f-8e09-21685826ab50",
-                'bios', False, False)
+                'bios', False, False, False)
             set_boot_device_mock.assert_called_once_with(task,
                                                          boot_devices.PXE)
 

@@ -1057,8 +1057,8 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
                                 False,
-                                False,
-                                True)
+                                True,
+                                False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_PXECONF_BOOT_PARTITION_CUSTOM_CMDLINE, pxeconf)
@@ -1082,7 +1082,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
-                                False, True, False)
+                                False, False, True)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_PXECONF_TRUSTED_BOOT, pxeconf)
@@ -1109,8 +1109,8 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
                                 False,
-                                False,
-                                True)
+                                True,
+                                False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_IPXECONF_BOOT_PARTITION_CUSTOM_CMDLINE, pxeconf)
@@ -1173,9 +1173,9 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '0x12345678',
                                 boot_mode,
+                                True,
                                 False,
-                                False,
-                                True)
+                                False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_UEFI_PXECONF_BOOT_WHOLE_DISK_GRUB, pxeconf)
