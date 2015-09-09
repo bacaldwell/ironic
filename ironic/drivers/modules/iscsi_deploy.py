@@ -397,13 +397,17 @@ def continue_deploy(task, **kwargs):
                {'instance': node.instance_uuid, 'error': e})
         _fail_deploy(task, msg)
 
-    root_uuid_or_disk_id = uuid_dict_returned.get(
-        'root uuid', uuid_dict_returned.get('disk identifier'))
-    if not root_uuid_or_disk_id:
-        msg = (_("Couldn't determine the UUID of the root "
-                 "partition or the disk identifier after deploying "
-                 "node %s") % node.uuid)
-        _fail_deploy(task, msg)
+    # NOTE(blakec): If we are using the cmdline from instance_info,
+    # then allow uuid_dict_returned to remain empty {} as node does
+    # not need it to boot.
+    if not params['skip_block_uuid']:
+        root_uuid_or_disk_id = uuid_dict_returned.get(
+            'root uuid', uuid_dict_returned.get('disk identifier'))
+        if not root_uuid_or_disk_id:
+            msg = (_("Couldn't determine the UUID of the root "
+                     "partition or the disk identifier after deploying "
+                     "node %s") % node.uuid)
+            _fail_deploy(task, msg)
 
     if params.get('preserve_ephemeral', False):
         # Save disk layout information, to check that they are unchanged
