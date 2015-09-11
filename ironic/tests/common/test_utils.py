@@ -443,6 +443,23 @@ class GenericUtilsTestCase(base.TestCase):
                          utils.unix_file_modification_datetime('foo'))
         mtime_mock.assert_called_once_with('foo')
 
+    def test_merge_kernel_cmdline(self):
+        cmdline1 = 'ro root=imagerootfs text'
+        cmdline2 = 'ro root=fakerootfs cat=meow'
+
+        # assert root=imagerootfs is the one that take precedence
+        # unique parameters are present in the new cmdline
+        expected = 'cat=meow ro root=imagerootfs text'
+        result = utils.merge_kernel_cmdline(cmdline1, cmdline2)
+        self.assertEqual(expected, result)
+
+    def test__parse_kernel_cmdline(self):
+        cmdline = 'ro text root=/dev/mapper/fake-root foo=baz'
+        expected = {'root': '/dev/mapper/fake-root',
+                    'ro': None, 'text': None, 'foo': 'baz'}
+        result = utils._parse_kernel_cmdline(cmdline)
+        self.assertEqual(expected, result)
+
 
 class MkfsTestCase(base.TestCase):
 
