@@ -719,6 +719,8 @@ class ConductorManager(periodic_task.PeriodicTasks):
             # the deploy driver to validate this.
             iwdi = images.is_whole_disk_image(context, node.instance_info)
             driver_internal_info['is_whole_disk_image'] = iwdi
+            dmti = images.deploy_matched_to_image(context, node.instance_info)
+            driver_internal_info['deploy_matched_to_image'] = dmti
             node.driver_internal_info = driver_internal_info
             node.save()
 
@@ -1391,6 +1393,9 @@ class ConductorManager(periodic_task.PeriodicTasks):
             iwdi = images.is_whole_disk_image(context,
                                               task.node.instance_info)
             task.node.driver_internal_info['is_whole_disk_image'] = iwdi
+            dmti = images.deploy_matched_to_image(context,
+                                              task.node.instance_info)
+            task.node.driver_internal_info['deploy_matched_to_image'] = dmti
             for iface_name in (task.driver.core_interfaces +
                                task.driver.standard_interfaces):
                 iface = getattr(task.driver, iface_name, None)
@@ -1410,6 +1415,7 @@ class ConductorManager(periodic_task.PeriodicTasks):
                 ret_dict[iface_name] = {}
                 ret_dict[iface_name]['result'] = result
                 if reason is not None:
+
                     ret_dict[iface_name]['reason'] = reason
         return ret_dict
 

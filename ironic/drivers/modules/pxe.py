@@ -286,8 +286,15 @@ def _build_pxe_config_options(task, pxe_info):
             ramdisk = '/'.join([CONF.deploy.http_url, node.uuid,
                                'ramdisk'])
     else:
-        deploy_kernel = pxe_info['deploy_kernel'][1]
-        deploy_ramdisk = pxe_info['deploy_ramdisk'][1]
+        deploy_matched_to_image = node.driver_internal_info.get('deploy_matched_to_image')
+        if deploy_matched_to_image:
+            # Use the kernel and ramdisk part associated with the image
+            # for deployment
+            deploy_kernel = pxe_info['kernel'][1]
+            deploy_ramdisk = pxe_info['ramdisk'][1]
+        else:
+            deploy_kernel = pxe_info['deploy_kernel'][1]
+            deploy_ramdisk = pxe_info['deploy_ramdisk'][1]
         if not is_whole_disk_image:
             kernel = pxe_info['kernel'][1]
             ramdisk = pxe_info['ramdisk'][1]

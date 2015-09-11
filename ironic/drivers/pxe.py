@@ -36,6 +36,7 @@ from ironic.drivers.modules import ipmitool
 from ironic.drivers.modules.irmc import management as irmc_management
 from ironic.drivers.modules.irmc import power as irmc_power
 from ironic.drivers.modules import iscsi_deploy
+from ironic.drivers.modules import noop_deploy
 from ironic.drivers.modules.msftocs import management as msftocs_management
 from ironic.drivers.modules.msftocs import power as msftocs_power
 from ironic.drivers.modules import pxe
@@ -333,3 +334,28 @@ class PXEAndWakeOnLanDriver(base.BaseDriver):
         self.boot = pxe.PXEBoot()
         self.deploy = iscsi_deploy.ISCSIDeploy()
         self.vendor = iscsi_deploy.VendorPassthru()
+
+
+class NoopAndIPMIToolDriver(base.BaseDriver):
+    """(PXE) + NOOP + IPMITool driver.
+
+    This driver follows the pxe_ipmitool driver for the boot
+    phase, but it performs a "noop" form the deploy step that
+    would normally be handled by iscsi, relying on pxe cmdline
+    parameters to indicate where the root decice can be found.
+    It combines
+    :class:`ironic.drivers.modules.ipmi.IPMI` for power on/off
+    and reboot with
+    :class:`ironic.drivers.modules.noop_deploy.NoopDeploy` for
+    image deployment. Implementations are in those respective
+    classes; this class is merely the glue between them.
+    """
+    def __init__(self):
+        self.power = ipmitool.IPMIPower()
+        self.console = ipmitool.IPMIShellinaboxConsole()
+        self.boot = pxe.PXEBoot()
+        self.deploy = noop_deploy.NoopDeploy()
+        self.management = ipmitool.IPMIManagement()
+        self.vendor = noop_deploy.VendorPassthru()
+        self.inspect = inspector.Inspector.create_if_enabled(
+            'NoopAndIPMIToolDriver')

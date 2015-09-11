@@ -517,6 +517,40 @@ def is_whole_disk_image(ctx, instance_info):
     return is_whole_disk_image
 
 
+def deploy_matched_to_image(ctx, instance_info):
+    """Find out if the image requires a matching deploy ramdisk and kernel
+
+    :param ctx: an admin context
+    :param instance_info: a node's instance info dict
+
+    :returns True for an image requiring a matching kernel and ramsisk
+        False if no such requirements exist
+        and None on no image_source or Error.
+    """
+    image_source = instance_info.get('image_source')
+    if not image_source:
+        return
+
+    deploy_matched_to_image = False
+    if glance_utils.is_glance_image(image_source):
+        try:
+            iproperties = get_image_properties(ctx, image_source)
+        except Exception:
+            return
+        deploy_matched_to_image = iproperties.get('matching_deploy')
+
+    else:
+        # Non glance image ref
+        deploy_matched_to_image = instance_info.get('matching_deploy')
+
+
+    if utils.is_valid_boolstr(deploy_matched_to_image):
+        return deploy_matched_to_image
+
+    else:
+        return False
+
+
 def _mount_deploy_iso(deploy_iso, mountdir):
     """This function opens up the deploy iso used for deploy.
 
