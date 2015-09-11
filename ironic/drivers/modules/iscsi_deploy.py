@@ -211,6 +211,7 @@ def parse_instance_info(node):
 
     i_info['ephemeral_format'] = info.get('ephemeral_format')
     i_info['configdrive'] = info.get('configdrive')
+    i_info['kernel_cmdline'] = info.get('kernel_cmdline')
 
     if i_info['ephemeral_gb'] and not i_info['ephemeral_format']:
         i_info['ephemeral_format'] = CONF.pxe.default_ephemeral_format
@@ -325,6 +326,11 @@ def get_deploy_info(node, **kwargs):
     if is_whole_disk_image:
         return params
 
+    # NOTE(lucasagomes): If we have a custom kernel command
+    # line we should not try to figure out the UUID of the root
+    # partition.
+    params['skip_block_uuid'] = bool(i_info.get('kernel_cmdline'))
+
     # configdrive and ephemeral_format are nullable
     params['ephemeral_format'] = i_info.get('ephemeral_format')
     params['configdrive'] = i_info.get('configdrive')
@@ -391,13 +397,14 @@ def continue_deploy(task, **kwargs):
                {'instance': node.instance_uuid, 'error': e})
         _fail_deploy(task, msg)
 
-    root_uuid_or_disk_id = uuid_dict_returned.get(
-        'root uuid', uuid_dict_returned.get('disk identifier'))
-    if not root_uuid_or_disk_id:
-        msg = (_("Couldn't determine the UUID of the root "
-                 "partition or the disk identifier after deploying "
-                 "node %s") % node.uuid)
-        _fail_deploy(task, msg)
+    if not params['skip_block_uuid']:
+        root_uuid_or_disk_id = uuid_dict_returned.get(
+            'root uuid', uuid_dict_returned.get('disk identifier'))
+        if not root_uuid_or_disk_id:
+            msg = (_("Couldn't determine the UUID of the root "
+                     "partition or the disk identifier after deploying "
+                     "node %s") % node.uuid)
+            _fail_deploy(task, msg)
 
     if params.get('preserve_ephemeral', False):
         # Save disk layout information, to check that they are unchanged

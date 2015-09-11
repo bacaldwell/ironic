@@ -671,3 +671,42 @@ def unix_file_modification_datetime(file_name):
             os.path.getmtime(file_name), tz=pytz.utc
         )
     )
+
+
+def _parse_kernel_cmdline(cmdline):
+    result = {}
+    for opt in cmdline.split():
+        if '=' in opt:
+            key, value = opt.split('=', 1)
+            result[key] = value
+        else:
+            result[opt] = None
+    return result
+
+
+def merge_kernel_cmdline(cmdline1, cmdline2, cmdline3):
+    """Merge three kernel command lines.
+
+    Merge three kernel command lines, if there are duplicated options the
+    options in cmdline1 will take precedence over the options in cmdline2,
+    and options in cmdline2 will take precedence over the options in
+    cmdline3.
+
+    :param cmdline1: A kernel command line string.
+    :param cmdline2: A kernel command line string.
+    :param cmdline3: A kernel command line string.
+    :returns: A kernel command line string containing the options from
+        cmdline1, cmdline2 and cmdline3.
+
+    """
+    cmdline = _parse_kernel_cmdline(cmdline3)
+    cmdline.update(_parse_kernel_cmdline(cmdline2))
+    cmdline.update(_parse_kernel_cmdline(cmdline1))
+    final_cmdline = ''
+    # sorted() for predictability when running the tests
+    for key, value in sorted(cmdline.items()):
+        if value is not None:
+            final_cmdline += '%s=%s ' % (key, value)
+        else:
+            final_cmdline += '%s ' % key
+    return final_cmdline.strip()

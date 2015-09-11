@@ -11,6 +11,13 @@ image=/tftpboot/1be26c0b-03f2-4d2e-ae87-c02d7f33c123/kernel
         initrd=/tftpboot/1be26c0b-03f2-4d2e-ae87-c02d7f33c123/ramdisk
         append="root={{ ROOT }} ro text test_param ip=%I::%G:%M:%H::on"
 
+
+image=/tftpboot/1be26c0b-03f2-4d2e-ae87-c02d7f33c123/kernel
+        label=boot_partition_custom_cmdline
+        initrd=/tftpboot/1be26c0b-03f2-4d2e-ae87-c02d7f33c123/ramdisk
+        append="root=live:<URL> ro text"
+
+
 image=chain.c32
         label=boot_whole_disk
         append="mbr:{{ DISK_IDENTIFIER }}"
