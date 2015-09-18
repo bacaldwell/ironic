@@ -45,6 +45,7 @@ class TestPXEUtils(db_base.DbTestCase):
                                    u'f33c123/deploy_ramdisk',
             'root_device': 'vendor=fake,size=123',
             'ipa-api-url': 'http://192.168.122.184:6385',
+            'kernel_cmdline': 'root=live:<URL> ro text'
         }
 
         self.pxe_options = {

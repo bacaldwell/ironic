@@ -96,6 +96,28 @@ append tboot.gz --- kernel root=UUID=12345678-1234-1234-1234-1234567890abcdef \
 --- ramdisk
 """
 
+_PXECONF_BOOT_PARTITION_CUSTOM_CMDLINE = """
+default boot_partition_custom_cmdline
+
+label deploy
+kernel deploy_kernel
+append initrd=deploy_ramdisk
+ipappend 3
+
+label boot_partition
+kernel kernel
+append initrd=ramdisk root=UUID=12345678-1234-1234-1234-1234567890abcdef
+
+label boot_whole_disk
+COM32 chain.c32
+append mbr:{{ DISK_IDENTIFIER }}
+
+label trusted_boot
+kernel mboot
+append tboot.gz --- kernel root=UUID=12345678-1234-1234-1234-1234567890abcdef \
+--- ramdisk
+"""
+
 _PXECONF_BOOT_WHOLE_DISK = """
 default boot_whole_disk
 
@@ -168,6 +190,29 @@ _IPXECONF_BOOT_PARTITION = """
 dhcp
 
 goto boot_partition
+
+:deploy
+kernel deploy_kernel
+initrd deploy_ramdisk
+boot
+
+:boot_partition
+kernel kernel
+append initrd=ramdisk root=UUID=12345678-1234-1234-1234-1234567890abcdef
+boot
+
+:boot_whole_disk
+kernel chain.c32
+append mbr:{{ DISK_IDENTIFIER }}
+boot
+"""
+
+_IPXECONF_BOOT_PARTITION_CUSTOM_CMDLINE = """
+#!ipxe
+
+dhcp
+
+goto boot_partition_custom_cmdline
 
 :deploy
 kernel deploy_kernel
@@ -968,7 +1013,8 @@ class PhysicalWorkTestCase(tests_base.TestCase):
                                                  node_uuid, configdrive=None,
                                                  preserve_ephemeral=False,
                                                  boot_option="netboot",
-                                                 boot_mode="bios"),
+                                                 boot_mode="bios",
+                                                 skip_block_uuid=False),
                           mock.call.logout_iscsi(address, port, iqn),
                           mock.call.delete_iscsi(address, port, iqn)]
 
@@ -1002,10 +1048,24 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
+                                False,
                                 False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_PXECONF_BOOT_PARTITION, pxeconf)
+
+    def test_switch_pxe_config_partition_custom_cmdline_image(self):
+        boot_mode = 'bios'
+        fname = self._create_config()
+        utils.switch_pxe_config(fname,
+                                '12345678-1234-1234-1234-1234567890abcdef',
+                                boot_mode,
+                                False,
+                                True,
+                                False)
+        with open(fname, 'r') as f:
+            pxeconf = f.read()
+        self.assertEqual(_PXECONF_BOOT_PARTITION_CUSTOM_CMDLINE, pxeconf)
 
     def test_switch_pxe_config_whole_disk_image(self):
         boot_mode = 'bios'
@@ -1013,7 +1073,9 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '0x12345678',
                                 boot_mode,
-                                True)
+                                True,
+                                False,
+                                False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_PXECONF_BOOT_WHOLE_DISK, pxeconf)
@@ -1024,7 +1086,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
-                                False, True)
+                                False, False, True)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_PXECONF_TRUSTED_BOOT, pxeconf)
@@ -1036,10 +1098,24 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
+                                False,
                                 False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_IPXECONF_BOOT_PARTITION, pxeconf)
+
+    def test_switch_ipxe_config_partition_custom_cmdline_image(self):
+        boot_mode = 'bios'
+        cfg.CONF.set_override('ipxe_enabled', True, 'pxe')
+        fname = self._create_config(ipxe=True)
+        utils.switch_pxe_config(fname,
+                                '12345678-1234-1234-1234-1234567890abcdef',
+                                boot_mode,
+                                False,
+                                True)
+        with open(fname, 'r') as f:
+            pxeconf = f.read()
+        self.assertEqual(_IPXECONF_BOOT_PARTITION_CUSTOM_CMDLINE, pxeconf)
 
     def test_switch_ipxe_config_whole_disk_image(self):
         boot_mode = 'bios'
@@ -1048,7 +1124,8 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '0x12345678',
                                 boot_mode,
-                                True)
+                                True,
+                                False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_IPXECONF_BOOT_WHOLE_DISK, pxeconf)
@@ -1059,6 +1136,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
+                                False,
                                 False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
@@ -1070,7 +1148,8 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '0x12345678',
                                 boot_mode,
-                                True)
+                                True,
+                                False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_UEFI_PXECONF_BOOT_WHOLE_DISK, pxeconf)
@@ -1081,6 +1160,7 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '12345678-1234-1234-1234-1234567890abcdef',
                                 boot_mode,
+                                False,
                                 False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
@@ -1092,7 +1172,8 @@ class SwitchPxeConfigTestCase(tests_base.TestCase):
         utils.switch_pxe_config(fname,
                                 '0x12345678',
                                 boot_mode,
-                                True)
+                                True,
+                                False)
         with open(fname, 'r') as f:
             pxeconf = f.read()
         self.assertEqual(_UEFI_PXECONF_BOOT_WHOLE_DISK_GRUB, pxeconf)
@@ -1347,6 +1428,30 @@ class WorkOnDiskTestCase(tests_base.TestCase):
                                              boot_option="netboot",
                                              boot_mode="bios")
         mock_unlink.assert_called_once_with('fake-path')
+
+    @mock.patch.object(utils, 'block_uuid', autospec=True)
+    @mock.patch.object(utils, 'populate_image', autospec=True)
+    def test_skip_block_uuid(self, mock_populate, mock_block_uuid):
+        root_part = '/dev/fake-part1'
+        self.mock_mp.return_value = {'root': root_part}
+        self.mock_ibd.side_effect = iter([True, True, True])
+        response = utils.work_on_disk(self.dev, self.root_mb, self.swap_mb,
+                                      self.ephemeral_mb, self.ephemeral_format,
+                                      self.image_path, 'fake-uuid',
+                                      skip_block_uuid=True)
+        # if skip_block_uuid is True, it should return an empty dict
+        self.assertEqual({}, response)
+        # assert block_uuid wasn't called
+        self.assertFalse(mock_block_uuid.called)
+        mock_populate.assert_called_once_with(self.image_path, root_part)
+        self.mock_ibd.assert_called_once_with(root_part)
+        self.mock_mp.assert_called_once_with(self.dev, self.root_mb,
+                                             self.swap_mb, self.ephemeral_mb,
+                                             self.configdrive_mb,
+                                             'fake-uuid',
+                                             commit=True,
+                                             boot_option="netboot",
+                                             boot_mode="bios")
 
 
 @mock.patch.object(common_utils, 'execute', autospec=True)

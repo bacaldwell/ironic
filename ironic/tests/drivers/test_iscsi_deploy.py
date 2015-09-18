@@ -630,6 +630,7 @@ class IscsiDeployMethodsTestCase(db_base.DbTestCase):
             'preserve_ephemeral': True,
             'root_mb': 102400,
             'swap_mb': 0,
+            'skip_block_uuid': False,
         }
         log_params = mock_deploy_info.return_value.copy()
         # Make sure we don't log the full content of the configdrive
@@ -676,6 +677,7 @@ class IscsiDeployMethodsTestCase(db_base.DbTestCase):
             'lun': '1',
             'node_uuid': u'1be26c0b-03f2-4d2e-ae87-c02d7f33c123',
             'port': '3260',
+            'skip_block_uuid': False,
         }
         log_params = mock_deploy_info.return_value.copy()
         expected_dict = {
@@ -707,6 +709,7 @@ class IscsiDeployMethodsTestCase(db_base.DbTestCase):
         self.assertEqual('1.1.1.1', ret_val['address'])
         self.assertEqual('target-iqn', ret_val['iqn'])
         self.assertEqual('netboot', ret_val['boot_option'])
+        self.assertFalse(ret_val['skip_block_uuid'])
 
     def test_get_deploy_info_netboot_specified(self):
         instance_info = self.node.instance_info
@@ -718,6 +721,7 @@ class IscsiDeployMethodsTestCase(db_base.DbTestCase):
         self.assertEqual('1.1.1.1', ret_val['address'])
         self.assertEqual('target-iqn', ret_val['iqn'])
         self.assertEqual('netboot', ret_val['boot_option'])
+        self.assertFalse(ret_val['skip_block_uuid'])
 
     def test_get_deploy_info_localboot(self):
         instance_info = self.node.instance_info
@@ -729,6 +733,19 @@ class IscsiDeployMethodsTestCase(db_base.DbTestCase):
         self.assertEqual('1.1.1.1', ret_val['address'])
         self.assertEqual('target-iqn', ret_val['iqn'])
         self.assertEqual('local', ret_val['boot_option'])
+        self.assertFalse(ret_val['skip_block_uuid'])
+
+    def test_get_deploy_info_skip_block_uuid(self):
+        instance_info = self.node.instance_info
+        instance_info['deploy_key'] = 'key'
+        instance_info['kernel_cmdline'] = 'fake kernel cmdline'
+        self.node.instance_info = instance_info
+        kwargs = {'address': '1.1.1.1', 'iqn': 'target-iqn', 'key': 'key'}
+        ret_val = iscsi_deploy.get_deploy_info(self.node, **kwargs)
+        self.assertEqual('1.1.1.1', ret_val['address'])
+        self.assertEqual('target-iqn', ret_val['iqn'])
+        self.assertEqual('netboot', ret_val['boot_option'])
+        self.assertTrue(ret_val['skip_block_uuid'])
 
     @mock.patch.object(iscsi_deploy, 'continue_deploy', autospec=True)
     @mock.patch.object(iscsi_deploy, 'build_deploy_ramdisk_options',

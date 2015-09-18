@@ -211,8 +211,16 @@ def _get_instance_image_info(node, ctx):
     if not (i_info.get('kernel') and i_info.get('ramdisk')):
         glance_service = service.GlanceImageService(version=1, context=ctx)
         iproperties = glance_service.show(d_info['image_source'])['properties']
+        kernel_cmdline = iproperties.get('kernel_cmdline')
+        if kernel_cmdline:
+            # save the kernel_cmdline string in both node.instance_info and
+            # in the return dict to build the PXE configuration
+            i_info['kernel_cmdline'] = kernel_cmdline
+            image_info['kernel_cmdline'] = kernel_cmdline
+
         for label in labels:
             i_info[label] = str(iproperties[label + '_id'])
+
         node.instance_info = i_info
         node.save()
 
@@ -294,8 +302,27 @@ def _build_pxe_config_options(task, pxe_info):
         'pxe_append_params': _get_pxe_conf_option(task, 'pxe_append_params'),
         'tftp_server': CONF.pxe.tftp_server,
         'aki_path': kernel,
-        'ari_path': ramdisk
+        'ari_path': ramdisk,
     }
+
+    # if state is DEPLOYING _get_instance_image_info would have populated
+    # kernel_cmdline key, otherwise, it will be missing here. Don't
+    # fail if it's mssing
+    glance_cmdline = None
+    if 'kernel_cmdline' in pxe_info.keys():
+        glance_cmdline = pxe_info['kernel_cmdline']
+    i_info_cmdline = node.instance_info.get('kernel_cmdline')
+
+    if glance_cmdline or i_info_cmdline:
+        # There are three sources to merge for determining the
+        # kernel cmdline in the pxe configuration. The options specified
+        # in instance_info take precedence over the cmdline parameters
+        # in glace and the configuration, respectively
+        # ( Specific >> General )
+        conf_cmdline = CONF.pxe.pxe_append_params
+        kernel_cmdline = utils.merge_kernel_cmdline(
+            i_info_cmdline, glance_cmdline, conf_cmdline)
+        pxe_options['kernel_cmdline'] = kernel_cmdline
 
     return pxe_options
 
@@ -363,6 +390,10 @@ def _cache_ramdisk_kernel(ctx, node, pxe_info):
         os.path.join(pxe_utils.get_root_dir(), node.uuid))
     LOG.debug("Fetching necessary kernel and ramdisk for node %s",
               node.uuid)
+    # only get kernel and ramdisk values from pxe_info (skip kernel_cmdline)
+    if 'kernel_cmdline' in pxe_info.keys():
+        pxe_info.pop('kernel_cmdline')
+
     deploy_utils.fetch_images(ctx, TFTPImageCache(), list(pxe_info.values()),
                               CONF.force_raw_images)
 
@@ -445,7 +476,15 @@ class PXEBoot(base.BootInterface):
 
         _parse_driver_info(node)
         d_info = _parse_instance_info(node)
-        if node.driver_internal_info.get('is_whole_disk_image'):
+
+        iwdi = node.driver_internal_info.get('is_whole_disk_image')
+        local_boot = deploy_utils.get_boot_option(node) == "local"
+        if (iwdi or local_boot) and node.instance_info.get('kernel_cmdline'):
+            raise exception.InvalidParameterValue(
+                _("Conflict: Custom kernel command line (kernel_cmdline) "
+                  "does not work with whole disk images or local boot."))
+
+        if iwdi:
             props = []
         elif service_utils.is_glance_image(d_info['image_source']):
             props = ['kernel_id', 'ramdisk_id']
@@ -576,10 +615,13 @@ class PXEBoot(base.BootInterface):
             else:
                 pxe_config_path = pxe_utils.get_pxe_config_file_path(
                     task.node.uuid)
+                custom_kernel_cmdline = 'kernel_cmdline' in node.instance_info
                 deploy_utils.switch_pxe_config(
                     pxe_config_path, root_uuid_or_disk_id,
                     deploy_utils.get_boot_mode_for_deploy(node),
-                    iwdi, deploy_utils.is_trusted_boot_requested(node))
+                    iwdi, custom_kernel_cmdline,
+                    deploy_utils.is_trusted_boot_requested(node))
+
                 # In case boot mode changes from bios to uefi, boot device
                 # order may get lost in some platforms. Better to re-apply
                 # boot device.
