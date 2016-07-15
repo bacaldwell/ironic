@@ -271,11 +271,13 @@ def _replace_root_uuid(path, root_uuid):
 
 
 def _replace_boot_line(path, boot_mode, is_whole_disk_image,
-                       trusted_boot=False):
+                       trusted_boot=False, has_custom_kernel_cmdline):
     if is_whole_disk_image:
         boot_disk_type = 'boot_whole_disk'
     elif trusted_boot:
         boot_disk_type = 'trusted_boot'
+    elif has_custom_kernel_cmdline:
+        boot_disk_type = 'boot_partition_custom_cmdline'
     else:
         boot_disk_type = 'boot_partition'
 
@@ -296,7 +298,8 @@ def _replace_disk_identifier(path, disk_identifier):
 
 
 def switch_pxe_config(path, root_uuid_or_disk_id, boot_mode,
-                      is_whole_disk_image, trusted_boot=False):
+                      is_whole_disk_image, trusted_boot=False,
+                      has_custom_kernel_cmdline):
     """Switch a pxe config from deployment mode to service mode.
 
     :param path: path to the pxe config file in tftpboot.
@@ -307,6 +310,8 @@ def switch_pxe_config(path, root_uuid_or_disk_id, boot_mode,
     :param trusted_boot: if boot with trusted_boot or not. The usage of
         is_whole_disk_image and trusted_boot are mutually exclusive. You can
         have one or neither, but not both.
+    :param has_custom_kernel_cmdline: Boolean value. Whether the image has
+        a specific kernel command line to boot or not.
     """
     if not is_whole_disk_image:
         _replace_root_uuid(path, root_uuid_or_disk_id)
@@ -314,6 +319,7 @@ def switch_pxe_config(path, root_uuid_or_disk_id, boot_mode,
         _replace_disk_identifier(path, root_uuid_or_disk_id)
 
     _replace_boot_line(path, boot_mode, is_whole_disk_image, trusted_boot)
+                       has_custom_kernel_cmdline)
 
 
 def get_dev(address, port, iqn, lun):
@@ -327,7 +333,8 @@ def deploy_partition_image(
         address, port, iqn, lun, image_path,
         root_mb, swap_mb, ephemeral_mb, ephemeral_format, node_uuid,
         preserve_ephemeral=False, configdrive=None,
-        boot_option="netboot", boot_mode="bios", disk_label=None):
+        boot_option="netboot", boot_mode="bios", disk_label=None,
+        skip_block_uuid=False):
     """All-in-one function to deploy a partition image to a node.
 
     :param address: The iSCSI IP address.
@@ -352,6 +359,10 @@ def deploy_partition_image(
     :param disk_label: The disk label to be used when creating the
         partition table. Valid values are: "msdos", "gpt" or None; If None
         Ironic will figure it out according to the boot_mode parameter.
+    :param skip_block_uuid: Boolean value. If True skip finding the
+        UUID of the root partition. This is because the root filesystem of
+        the image may come from a different source such as: brtfs subvolume,
+        lvm volume, etc.. Defaults to False.
     :raises: InstanceDeployFailure if image virtual size is bigger than root
         partition size.
     :returns: a dictionary containing the following keys:
@@ -373,13 +384,14 @@ def deploy_partition_image(
             dev, root_mb, swap_mb, ephemeral_mb, ephemeral_format, image_path,
             node_uuid, preserve_ephemeral=preserve_ephemeral,
             configdrive=configdrive, boot_option=boot_option,
-            boot_mode=boot_mode, disk_label=disk_label)
+            boot_mode=boot_mode, disk_label=disk_label,
+            skip_block_uuid=skip_block_uuid)
 
     return uuid_dict_returned
 
 
 def deploy_disk_image(address, port, iqn, lun,
-                      image_path, node_uuid):
+                      image_path, node_uuid, skip_block_uuid=False):
     """All-in-one function to deploy a whole disk image to a node.
 
     :param address: The iSCSI IP address.
@@ -389,12 +401,17 @@ def deploy_disk_image(address, port, iqn, lun,
     :param image_path: Path for the instance's disk image.
     :param node_uuid: node's uuid. Used for logging. Currently not in use
         by this function but could be used in the future.
+    :param skip_block_uuid: whether to try to get disk identifier
+        or use root path from custom kernel cmdline
     :returns: a dictionary containing the key 'disk identifier' to identify
         the disk which was used for deployment.
     """
     with _iscsi_setup_and_handle_errors(address, port, iqn,
                                         lun) as dev:
         disk_utils.populate_image(image_path, dev)
+
+        if skip_block_uuid:
+            return {}
         disk_identifier = disk_utils.get_disk_identifier(dev)
 
     return {'disk identifier': disk_identifier}
@@ -893,6 +910,8 @@ def validate_image_properties(ctx, deploy_info, properties):
     for prop in properties:
         if not (deploy_info.get(prop) or image_props.get(prop)):
             missing_props.append(prop)
+
+    # TODO(blakec) verify that prop cmdline is accounted for
 
     if missing_props:
         props = ', '.join(missing_props)

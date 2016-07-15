@@ -547,6 +547,24 @@ class GenericUtilsTestCase(base.TestCase):
                 utils.is_valid_no_proxy(no_proxy),
                 msg="'no_proxy' value should be invalid: {}".format(no_proxy))
 
+    def test_merge_kernel_cmdline(self):
+        cmdline1 = 'ro root=imagerootfs text'
+        cmdline2 = 'ro root=fakerootfs cat=meow'
+        cmdline3 = 'ro root=mostfakerootfs dog=bark'
+
+        # assert root=imagerootfs is the one that take precedence
+        # unique parameters are present in the new cmdline
+        expected = 'cat=meow dog=bark ro root=imagerootfs text'
+        result = utils.merge_kernel_cmdline(cmdline1, cmdline2, cmdline3)
+        self.assertEqual(expected, result)
+
+    def test__parse_kernel_cmdline(self):
+        cmdline = 'ro text root=/dev/mapper/fake-root foo=baz'
+        expected = {'root': '/dev/mapper/fake-root',
+                    'ro': None, 'text': None, 'foo': 'baz'}
+        result = utils._parse_kernel_cmdline(cmdline)
+        self.assertEqual(expected, result)
+
 
 class TempFilesTestCase(base.TestCase):
 

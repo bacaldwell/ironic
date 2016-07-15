@@ -11,6 +11,11 @@ kernel {{ pxe_options.aki_path }}
 append initrd={{ pxe_options.ari_path }} root={{ ROOT }} ro text {{ pxe_options.pxe_append_params|default("", true) }}
 
 
+label boot_partition_custom_cmdline
+kernel {{ pxe_options.aki_path }}
+append initrd={{ pxe_options.ari_path }} {{ pxe_options.kernel_cmdline|default("", true) }}
+
+
 label boot_whole_disk
 COM32 chain.c32
 append mbr:{{ DISK_IDENTIFIER }}

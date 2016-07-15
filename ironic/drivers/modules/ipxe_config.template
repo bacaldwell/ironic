@@ -17,5 +17,10 @@ kernel {% if pxe_options.ipxe_timeout > 0 %}--timeout {{ pxe_options.ipxe_timeou
 initrd {% if pxe_options.ipxe_timeout > 0 %}--timeout {{ pxe_options.ipxe_timeout }} {% endif %}{{ pxe_options.ari_path }} || goto boot_partition
 boot
 
+:boot_partition_custom_cmdline
+kernel {{ pxe_options.aki_path }} {{ pxe_options.kernel_cmdline|default("", true) }}
+initrd {{ pxe_options.ari_path }}
+boot
+
 :boot_whole_disk
 sanboot --no-describe

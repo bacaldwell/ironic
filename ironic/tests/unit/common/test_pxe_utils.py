@@ -48,6 +48,7 @@ class TestPXEUtils(db_base.DbTestCase):
             'root_device': 'vendor=fake,size=123',
             'ipa-api-url': 'http://192.168.122.184:6385',
             'ipxe_timeout': 0,
+            'kernel_cmdline': 'root=live:<URL> ro text'
         }
 
         self.pxe_options = {
