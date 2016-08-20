@@ -16,6 +16,7 @@
 import os
 
 from ironic_lib import disk_utils
+from ironic_lib import metrics_utils
 from ironic_lib import utils as ironic_utils
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -25,11 +26,11 @@ from six.moves.urllib import parse
 from ironic.common import dhcp_factory
 from ironic.common import exception
 from ironic.common.i18n import _
-from ironic.common import keystone
 from ironic.common import states
 from ironic.common import utils
 from ironic.conductor import task_manager
 from ironic.conductor import utils as manager_utils
+from ironic.conf import CONF
 from ironic.drivers import base
 from ironic.drivers.modules import agent_base_vendor
 from ironic.drivers.modules import deploy_utils
@@ -37,42 +38,7 @@ from ironic.drivers.modules import image_cache
 
 LOG = logging.getLogger(__name__)
 
-# NOTE(rameshg87): This file now registers some of opts in pxe group.
-# This is acceptable for now as a future refactoring into
-# separate boot and deploy interfaces is planned, and moving config
-# options twice is not recommended.  Hence we would move the parameters
-# to the appropriate place in the final refactoring.
-pxe_opts = [
-    cfg.StrOpt('pxe_append_params',
-               default='nofb nomodeset vga=normal',
-               help=_('Additional append parameters for baremetal PXE boot.')),
-    cfg.StrOpt('default_ephemeral_format',
-               default='ext4',
-               help=_('Default file system format for ephemeral partition, '
-                      'if one is created.')),
-    cfg.StrOpt('images_path',
-               default='/var/lib/ironic/images/',
-               help=_('On the ironic-conductor node, directory where images '
-                      'are stored on disk.')),
-    cfg.StrOpt('instance_master_path',
-               default='/var/lib/ironic/master_images',
-               help=_('On the ironic-conductor node, directory where master '
-                      'instance images are stored on disk. '
-                      'Setting to <None> disables image caching.')),
-    cfg.IntOpt('image_cache_size',
-               default=20480,
-               help=_('Maximum size (in MiB) of cache for master images, '
-                      'including those in use.')),
-    # 10080 here is 1 week - 60*24*7. It is entirely arbitrary in the absence
-    # of a facility to disable the ttl entirely.
-    cfg.IntOpt('image_cache_ttl',
-               default=10080,
-               help=_('Maximum TTL (in minutes) for old master images in '
-                      'cache.')),
-    cfg.StrOpt('disk_devices',
-               default='cciss/c0d0,sda,hda,vda',
-               help=_('The disk devices to scan while doing the deploy.')),
-]
+METRICS = metrics_utils.get_metrics_logger(__name__)
 
 iscsi_opts = [
     cfg.PortOpt('portal_port',
@@ -81,8 +47,6 @@ iscsi_opts = [
                        'for incoming connections.')),
 ]
 
-CONF = cfg.CONF
-CONF.register_opts(pxe_opts, group='pxe')
 CONF.register_opts(iscsi_opts, group='iscsi')
 
 DISK_LAYOUT_PARAMS = ('root_gb', 'swap_mb', 'ephemeral_gb')
@@ -129,6 +93,7 @@ def _save_disk_layout(node, i_info):
     node.save()
 
 
+@METRICS.timer('check_image_size')
 def check_image_size(task):
     """Check if the requested image is larger than the root partition size.
 
@@ -147,6 +112,7 @@ def check_image_size(task):
         raise exception.InstanceDeployFailure(msg)
 
 
+@METRICS.timer('cache_instance_image')
 def cache_instance_image(ctx, node):
     """Fetch the instance's image from Glance
 
@@ -172,6 +138,7 @@ def cache_instance_image(ctx, node):
     return (uuid, image_path)
 
 
+@METRICS.timer('destroy_images')
 def destroy_images(node_uuid):
     """Delete instance's image file.
 
@@ -182,6 +149,7 @@ def destroy_images(node_uuid):
     InstanceImageCache().clean_up()
 
 
+@METRICS.timer('get_deploy_info')
 def get_deploy_info(node, address, iqn, port=None, lun='1'):
     """Returns the information required for doing iSCSI deploy in a dictionary.
 
@@ -235,6 +203,7 @@ def get_deploy_info(node, address, iqn, port=None, lun='1'):
     return params
 
 
+@METRICS.timer('continue_deploy')
 def continue_deploy(task, **kwargs):
     """Resume a deployment upon getting POST data from deploy ramdisk.
 
@@ -306,6 +275,7 @@ def continue_deploy(task, **kwargs):
     return uuid_dict_returned
 
 
+@METRICS.timer('do_agent_iscsi_deploy')
 def do_agent_iscsi_deploy(task, agent_client):
     """Method invoked when deployed with the agent ramdisk.
 
@@ -375,6 +345,7 @@ def _get_boot_mode(node):
     return "bios"
 
 
+@METRICS.timer('validate')
 def validate(task):
     """Validates the pre-requisites for iSCSI deploy.
 
@@ -388,185 +359,18 @@ def validate(task):
              catalog.
     :raises: MissingParameterValue if no ports are enrolled for the given node.
     """
-    try:
-        # TODO(lucasagomes): Validate the format of the URL
-        CONF.conductor.api_url or keystone.get_service_url()
-    except (exception.KeystoneFailure,
-            exception.CatalogNotFound,
-            exception.KeystoneUnauthorized) as e:
-        raise exception.InvalidParameterValue(_(
-            "Couldn't get the URL of the Ironic API service from the "
-            "configuration file or keystone catalog. Keystone error: %s") % e)
-
+    # TODO(lucasagomes): Validate the format of the URL
+    deploy_utils.get_ironic_api_url()
     # Validate the root device hints
     deploy_utils.parse_root_device_hints(task.node)
     deploy_utils.parse_instance_info(task.node)
 
 
-class ISCSIDeploy(base.DeployInterface):
-    """iSCSI Deploy Interface for deploy-related actions."""
+class AgentDeployMixin(agent_base_vendor.AgentDeployMixin):
 
-    def get_properties(self):
-        return {}
-
-    def validate(self, task):
-        """Validate the deployment information for the task's node.
-
-        :param task: a TaskManager instance containing the node to act on.
-        :raises: InvalidParameterValue.
-        :raises: MissingParameterValue
-        """
-        task.driver.boot.validate(task)
-        node = task.node
-
-        # Check the boot_mode, boot_option and disk_label capabilities values.
-        deploy_utils.validate_capabilities(node)
-
-        # TODO(rameshg87): iscsi_ilo driver uses this method. Remove
-        # and copy-paste it's contents here once iscsi_ilo deploy driver
-        # broken down into separate boot and deploy implementations.
-        validate(task)
-
+    @METRICS.timer('AgentDeployMixin.continue_deploy')
     @task_manager.require_exclusive_lock
-    def deploy(self, task):
-        """Start deployment of the task's node.
-
-        Fetches instance image, updates the DHCP port options for next boot,
-        and issues a reboot request to the power driver.
-        This causes the node to boot into the deployment ramdisk and triggers
-        the next phase of PXE-based deployment via agent heartbeats.
-
-        :param task: a TaskManager instance containing the node to act on.
-        :returns: deploy state DEPLOYWAIT.
-        """
-        node = task.node
-        cache_instance_image(task.context, node)
-        check_image_size(task)
-
-        manager_utils.node_power_action(task, states.REBOOT)
-
-        return states.DEPLOYWAIT
-
-    @task_manager.require_exclusive_lock
-    def tear_down(self, task):
-        """Tear down a previous deployment on the task's node.
-
-        Power off the node. All actual clean-up is done in the clean_up()
-        method which should be called separately.
-
-        :param task: a TaskManager instance containing the node to act on.
-        :returns: deploy state DELETED.
-        :raises: NetworkError if the cleaning ports cannot be removed.
-        :raises: InvalidParameterValue when the wrong state is specified
-             or the wrong driver info is specified.
-        :raises: other exceptions by the node's power driver if something
-             wrong occurred during the power action.
-        """
-        manager_utils.node_power_action(task, states.POWER_OFF)
-        task.driver.network.unconfigure_tenant_networks(task)
-        return states.DELETED
-
-    @task_manager.require_exclusive_lock
-    def prepare(self, task):
-        """Prepare the deployment environment for this task's node.
-
-        Generates the TFTP configuration for PXE-booting both the deployment
-        and user images, fetches the TFTP image from Glance and add it to the
-        local cache.
-
-        :param task: a TaskManager instance containing the node to act on.
-        :raises: NetworkError: if the previous cleaning ports cannot be removed
-            or if new cleaning ports cannot be created.
-        :raises: InvalidParameterValue when the wrong power state is specified
-             or the wrong driver info is specified for power management.
-        :raises: other exceptions by the node's power driver if something
-             wrong occurred during the power action.
-        :raises: any boot interface's prepare_ramdisk exceptions.
-        """
-        node = task.node
-        if node.provision_state == states.ACTIVE:
-            task.driver.boot.prepare_instance(task)
-        else:
-            if node.provision_state == states.DEPLOYING:
-                # Adding the node to provisioning network so that the dhcp
-                # options get added for the provisioning port.
-                manager_utils.node_power_action(task, states.POWER_OFF)
-                task.driver.network.add_provisioning_network(task)
-
-            deploy_opts = deploy_utils.build_agent_options(node)
-            task.driver.boot.prepare_ramdisk(task, deploy_opts)
-
-    def clean_up(self, task):
-        """Clean up the deployment environment for the task's node.
-
-        Unlinks TFTP and instance images and triggers image cache cleanup.
-        Removes the TFTP configuration files for this node.
-
-        :param task: a TaskManager instance containing the node to act on.
-        """
-        destroy_images(task.node.uuid)
-        task.driver.boot.clean_up_ramdisk(task)
-        task.driver.boot.clean_up_instance(task)
-        provider = dhcp_factory.DHCPFactory()
-        provider.clean_dhcp(task)
-
-    def take_over(self, task):
-        pass
-
-    def get_clean_steps(self, task):
-        """Get the list of clean steps from the agent.
-
-        :param task: a TaskManager object containing the node
-        :raises NodeCleaningFailure: if the clean steps are not yet
-            available (cached), for example, when a node has just been
-            enrolled and has not been cleaned yet.
-        :returns: A list of clean step dictionaries.
-        """
-        steps = deploy_utils.agent_get_clean_steps(
-            task, interface='deploy',
-            override_priorities={
-                'erase_devices': CONF.deploy.erase_devices_priority})
-        return steps
-
-    def execute_clean_step(self, task, step):
-        """Execute a clean step asynchronously on the agent.
-
-        :param task: a TaskManager object containing the node
-        :param step: a clean step dictionary to execute
-        :raises: NodeCleaningFailure if the agent does not return a command
-            status
-        :returns: states.CLEANWAIT to signify the step will be completed
-            asynchronously.
-        """
-        return deploy_utils.agent_execute_clean_step(task, step)
-
-    def prepare_cleaning(self, task):
-        """Boot into the agent to prepare for cleaning.
-
-        :param task: a TaskManager object containing the node
-        :raises NodeCleaningFailure: if the previous cleaning ports cannot
-            be removed or if new cleaning ports cannot be created
-        :returns: states.CLEANWAIT to signify an asynchronous prepare.
-        """
-        return deploy_utils.prepare_inband_cleaning(
-            task, manage_boot=True)
-
-    def tear_down_cleaning(self, task):
-        """Clean up the PXE and DHCP files after cleaning.
-
-        :param task: a TaskManager object containing the node
-        :raises NodeCleaningFailure: if the cleaning ports cannot be
-            removed
-        """
-        deploy_utils.tear_down_inband_cleaning(
-            task, manage_boot=True)
-
-
-class VendorPassthru(agent_base_vendor.BaseAgentVendor):
-    """Interface to mix IPMI and PXE vendor-specific interfaces."""
-
-    @task_manager.require_exclusive_lock
-    def continue_deploy(self, task, **kwargs):
+    def continue_deploy(self, task):
         """Method invoked when deployed using iSCSI.
 
         This method is invoked during a heartbeat from an agent when
@@ -588,3 +392,183 @@ class VendorPassthru(agent_base_vendor.BaseAgentVendor):
         efi_sys_uuid = uuid_dict_returned.get('efi system partition uuid')
         self.prepare_instance_to_boot(task, root_uuid, efi_sys_uuid)
         self.reboot_and_finish_deploy(task)
+
+
+class ISCSIDeploy(AgentDeployMixin, base.DeployInterface):
+    """iSCSI Deploy Interface for deploy-related actions."""
+
+    def get_properties(self):
+        return {}
+
+    @METRICS.timer('ISCSIDeploy.validate')
+    def validate(self, task):
+        """Validate the deployment information for the task's node.
+
+        :param task: a TaskManager instance containing the node to act on.
+        :raises: InvalidParameterValue.
+        :raises: MissingParameterValue
+        """
+        task.driver.boot.validate(task)
+        node = task.node
+
+        # Check the boot_mode, boot_option and disk_label capabilities values.
+        deploy_utils.validate_capabilities(node)
+
+        # TODO(rameshg87): iscsi_ilo driver uses this method. Remove
+        # and copy-paste it's contents here once iscsi_ilo deploy driver
+        # broken down into separate boot and deploy implementations.
+        validate(task)
+
+    @METRICS.timer('ISCSIDeploy.deploy')
+    @task_manager.require_exclusive_lock
+    def deploy(self, task):
+        """Start deployment of the task's node.
+
+        Fetches instance image, updates the DHCP port options for next boot,
+        and issues a reboot request to the power driver.
+        This causes the node to boot into the deployment ramdisk and triggers
+        the next phase of PXE-based deployment via agent heartbeats.
+
+        :param task: a TaskManager instance containing the node to act on.
+        :returns: deploy state DEPLOYWAIT.
+        """
+        node = task.node
+        cache_instance_image(task.context, node)
+        check_image_size(task)
+
+        manager_utils.node_power_action(task, states.REBOOT)
+
+        return states.DEPLOYWAIT
+
+    @METRICS.timer('ISCSIDeploy.tear_down')
+    @task_manager.require_exclusive_lock
+    def tear_down(self, task):
+        """Tear down a previous deployment on the task's node.
+
+        Power off the node. All actual clean-up is done in the clean_up()
+        method which should be called separately.
+
+        :param task: a TaskManager instance containing the node to act on.
+        :returns: deploy state DELETED.
+        :raises: NetworkError if the cleaning ports cannot be removed.
+        :raises: InvalidParameterValue when the wrong state is specified
+             or the wrong driver info is specified.
+        :raises: other exceptions by the node's power driver if something
+             wrong occurred during the power action.
+        """
+        manager_utils.node_power_action(task, states.POWER_OFF)
+        task.driver.network.unconfigure_tenant_networks(task)
+        return states.DELETED
+
+    @METRICS.timer('ISCSIDeploy.prepare')
+    @task_manager.require_exclusive_lock
+    def prepare(self, task):
+        """Prepare the deployment environment for this task's node.
+
+        Generates the TFTP configuration for PXE-booting both the deployment
+        and user images, fetches the TFTP image from Glance and add it to the
+        local cache.
+
+        :param task: a TaskManager instance containing the node to act on.
+        :raises: NetworkError: if the previous cleaning ports cannot be removed
+            or if new cleaning ports cannot be created.
+        :raises: InvalidParameterValue when the wrong power state is specified
+             or the wrong driver info is specified for power management.
+        :raises: other exceptions by the node's power driver if something
+             wrong occurred during the power action.
+        :raises: any boot interface's prepare_ramdisk exceptions.
+        """
+        node = task.node
+        if node.provision_state in [states.ACTIVE, states.ADOPTING]:
+            task.driver.boot.prepare_instance(task)
+        else:
+            if node.provision_state == states.DEPLOYING:
+                # Adding the node to provisioning network so that the dhcp
+                # options get added for the provisioning port.
+                manager_utils.node_power_action(task, states.POWER_OFF)
+                task.driver.network.add_provisioning_network(task)
+
+            deploy_opts = deploy_utils.build_agent_options(node)
+            task.driver.boot.prepare_ramdisk(task, deploy_opts)
+
+    @METRICS.timer('ISCSIDeploy.clean_up')
+    def clean_up(self, task):
+        """Clean up the deployment environment for the task's node.
+
+        Unlinks TFTP and instance images and triggers image cache cleanup.
+        Removes the TFTP configuration files for this node.
+
+        :param task: a TaskManager instance containing the node to act on.
+        """
+        destroy_images(task.node.uuid)
+        task.driver.boot.clean_up_ramdisk(task)
+        task.driver.boot.clean_up_instance(task)
+        provider = dhcp_factory.DHCPFactory()
+        provider.clean_dhcp(task)
+
+    def take_over(self, task):
+        pass
+
+    @METRICS.timer('ISCSIDeploy.get_clean_steps')
+    def get_clean_steps(self, task):
+        """Get the list of clean steps from the agent.
+
+        :param task: a TaskManager object containing the node
+        :raises NodeCleaningFailure: if the clean steps are not yet
+            available (cached), for example, when a node has just been
+            enrolled and has not been cleaned yet.
+        :returns: A list of clean step dictionaries.
+        """
+        steps = deploy_utils.agent_get_clean_steps(
+            task, interface='deploy',
+            override_priorities={
+                'erase_devices': CONF.deploy.erase_devices_priority,
+                'erase_devices_metadata':
+                    CONF.deploy.erase_devices_metadata_priority})
+        return steps
+
+    @METRICS.timer('ISCSIDeploy.execute_clean_step')
+    def execute_clean_step(self, task, step):
+        """Execute a clean step asynchronously on the agent.
+
+        :param task: a TaskManager object containing the node
+        :param step: a clean step dictionary to execute
+        :raises: NodeCleaningFailure if the agent does not return a command
+            status
+        :returns: states.CLEANWAIT to signify the step will be completed
+            asynchronously.
+        """
+        return deploy_utils.agent_execute_clean_step(task, step)
+
+    @METRICS.timer('ISCSIDeploy.prepare_cleaning')
+    def prepare_cleaning(self, task):
+        """Boot into the agent to prepare for cleaning.
+
+        :param task: a TaskManager object containing the node
+        :raises NodeCleaningFailure: if the previous cleaning ports cannot
+            be removed or if new cleaning ports cannot be created
+        :returns: states.CLEANWAIT to signify an asynchronous prepare.
+        """
+        return deploy_utils.prepare_inband_cleaning(
+            task, manage_boot=True)
+
+    @METRICS.timer('ISCSIDeploy.tear_down_cleaning')
+    def tear_down_cleaning(self, task):
+        """Clean up the PXE and DHCP files after cleaning.
+
+        :param task: a TaskManager object containing the node
+        :raises NodeCleaningFailure: if the cleaning ports cannot be
+            removed
+        """
+        deploy_utils.tear_down_inband_cleaning(
+            task, manage_boot=True)
+
+
+class VendorPassthru(AgentDeployMixin, agent_base_vendor.BaseAgentVendor):
+    """Interface to mix IPMI and PXE vendor-specific interfaces.
+
+    Contains old lookup and heartbeat endpoints currently pending deprecation.
+
+    WARNING: This class is deprecated and will be removed in the Ocata release.
+    Drivers should stop relying on it.
+    """

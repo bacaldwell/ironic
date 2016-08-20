@@ -19,11 +19,19 @@ from oslo_versionedobjects import base as object_base
 
 from ironic.common import exception
 from ironic.common.i18n import _
+from ironic.conf import CONF
 from ironic.db import api as db_api
 from ironic.objects import base
 from ironic.objects import fields as object_fields
 
 REQUIRED_INT_PROPERTIES = ['local_gb', 'cpus', 'memory_mb']
+
+
+def _default_network_interface():
+    network_iface = (CONF.default_network_interface or
+                     ('flat' if CONF.dhcp.dhcp_provider == 'neutron'
+                      else 'noop'))
+    return network_iface
 
 
 @base.IronicObjectRegistry.register
@@ -47,7 +55,9 @@ class Node(base.IronicObject, object_base.VersionedObjectDictCompat):
     #               and save() validate the input of property values.
     # Version 1.15: Add get_by_port_addresses
     # Version 1.16: Add network_interface field
-    VERSION = '1.16'
+    # Version 1.17: Add resource_class field
+    # Version 1.18: Add default setting for network_interface
+    VERSION = '1.18'
 
     dbapi = db_api.get_instance()
 
@@ -99,12 +109,16 @@ class Node(base.IronicObject, object_base.VersionedObjectDictCompat):
         # that started but failed to finish.
         'last_error': object_fields.StringField(nullable=True),
 
+        # Used by nova to relate the node to a flavor
+        'resource_class': object_fields.StringField(nullable=True),
+
         'inspection_finished_at': object_fields.DateTimeField(nullable=True),
         'inspection_started_at': object_fields.DateTimeField(nullable=True),
 
         'extra': object_fields.FlexibleDictField(nullable=True),
 
-        'network_interface': object_fields.StringField(nullable=True),
+        'network_interface': object_fields.StringFieldThatAcceptsCallable(
+            nullable=False, default=_default_network_interface),
     }
 
     def _validate_property_values(self, properties):

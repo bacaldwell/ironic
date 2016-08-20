@@ -176,6 +176,26 @@ class ListType(wtypes.UserType):
         return ListType.validate(value)
 
 
+class ListOfMacAddressesType(ListType):
+    """List of MAC addresses."""
+
+    @staticmethod
+    def validate(value):
+        """Validate and convert the input to a ListOfMacAddressesType.
+
+        :param value: A comma separated string of MAC addresses.
+        :returns: A list of unique MACs, whose order is not guaranteed.
+        """
+        items = ListType.validate(value)
+        return [MacAddressType.validate(item) for item in items]
+
+    @staticmethod
+    def frombasetype(value):
+        if value is None:
+            return None
+        return ListOfMacAddressesType.validate(value)
+
+
 macaddress = MacAddressType()
 uuid_or_name = UuidOrNameType()
 name = NameType()
@@ -184,6 +204,7 @@ boolean = BooleanType()
 listtype = ListType()
 # Can't call it 'json' because that's the name of the stdlib module
 jsontype = JsonType()
+list_of_macaddress = ListOfMacAddressesType()
 
 
 class JsonPatchType(wtypes.Base):
@@ -272,20 +293,20 @@ class LocalLinkConnectionType(wtypes.UserType):
         """Validate and convert the input to a LocalLinkConnectionType.
 
         :param value: A dictionary of values to validate, switch_id is a MAC
-        address or an OpenFlow based datapath_id, switch_info is an optional
-        field.
+            address or an OpenFlow based datapath_id, switch_info is an
+            optional field.
 
         For example::
-        {
+
+         {
             'switch_id': mac_or_datapath_id(),
             'port_id': 'Ethernet3/1',
             'switch_info': 'switch1'
-        }
+         }
 
         :returns: A dictionary.
         :raises: Invalid if some of the keys in the dictionary being validated
             are unknown, invalid, or some required ones are missing.
-
         """
         wtypes.DictType(wtypes.text, wtypes.text).validate(value)
 

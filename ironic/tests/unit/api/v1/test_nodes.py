@@ -25,7 +25,7 @@ from oslo_utils import uuidutils
 import six
 from six.moves import http_client
 from six.moves.urllib import parse as urlparse
-from testtools.matchers import HasLength
+from testtools import matchers
 from wsme import types as wtypes
 
 from ironic.api.controllers import base as api_base
@@ -36,6 +36,7 @@ from ironic.common import boot_devices
 from ironic.common import exception
 from ironic.common import states
 from ironic.conductor import rpcapi
+from ironic.conf import CONF
 from ironic import objects
 from ironic.tests import base
 from ironic.tests.unit.api import base as test_api_base
@@ -110,6 +111,8 @@ class TestListNodes(test_api_base.BaseApiTest):
         self.assertNotIn('clean_step', data['nodes'][0])
         self.assertNotIn('raid_config', data['nodes'][0])
         self.assertNotIn('target_raid_config', data['nodes'][0])
+        self.assertNotIn('network_interface', data['nodes'][0])
+        self.assertNotIn('resource_class', data['nodes'][0])
         # never expose the chassis_id
         self.assertNotIn('chassis_id', data['nodes'][0])
 
@@ -135,6 +138,8 @@ class TestListNodes(test_api_base.BaseApiTest):
         self.assertIn('inspection_started_at', data)
         self.assertIn('clean_step', data)
         self.assertIn('states', data)
+        self.assertIn('network_interface', data)
+        self.assertIn('resource_class', data)
         # never expose the chassis_id
         self.assertNotIn('chassis_id', data)
 
@@ -206,6 +211,25 @@ class TestListNodes(test_api_base.BaseApiTest):
         self.assertItemsEqual(['driver_info', 'links'], data)
         self.assertEqual('******', data['driver_info']['fake_password'])
 
+    def test_get_network_interface_fields_invalid_api_version(self):
+        node = obj_utils.create_test_node(self.context,
+                                          chassis_id=self.chassis.id)
+        fields = 'network_interface'
+        response = self.get_json(
+            '/nodes/%s?fields=%s' % (node.uuid, fields),
+            headers={api_base.Version.string: str(api_v1.MIN_VER)},
+            expect_errors=True)
+        self.assertEqual(http_client.NOT_ACCEPTABLE, response.status_int)
+
+    def test_get_network_interface_fields(self):
+        node = obj_utils.create_test_node(self.context,
+                                          chassis_id=self.chassis.id)
+        fields = 'network_interface'
+        response = self.get_json(
+            '/nodes/%s?fields=%s' % (node.uuid, fields),
+            headers={api_base.Version.string: str(api_v1.MAX_VER)})
+        self.assertIn('network_interface', response)
+
     def test_detail(self):
         node = obj_utils.create_test_node(self.context,
                                           chassis_id=self.chassis.id)
@@ -229,6 +253,7 @@ class TestListNodes(test_api_base.BaseApiTest):
         self.assertIn('inspection_started_at', data['nodes'][0])
         self.assertIn('raid_config', data['nodes'][0])
         self.assertIn('target_raid_config', data['nodes'][0])
+        self.assertIn('network_interface', data['nodes'][0])
         # never expose the chassis_id
         self.assertNotIn('chassis_id', data['nodes'][0])
 
@@ -302,6 +327,28 @@ class TestListNodes(test_api_base.BaseApiTest):
         data = self.get_json('/nodes/%s' % node.uuid,
                              headers={api_base.Version.string: "1.7"})
         self.assertEqual({"foo": "bar"}, data['clean_step'])
+
+    def test_hide_fields_in_newer_versions_network_interface(self):
+        node = obj_utils.create_test_node(self.context,
+                                          network_interface='flat')
+        data = self.get_json(
+            '/nodes/detail', headers={api_base.Version.string: '1.19'})
+        self.assertNotIn('network_interface', data['nodes'][0])
+        new_data = self.get_json(
+            '/nodes/detail', headers={api_base.Version.string: '1.20'})
+        self.assertEqual(node.network_interface,
+                         new_data['nodes'][0]["network_interface"])
+
+    def test_hide_fields_in_newer_versions_resource_class(self):
+        node = obj_utils.create_test_node(self.context,
+                                          resource_class='foo')
+        data = self.get_json(
+            '/nodes/detail', headers={api_base.Version.string: '1.20'})
+        self.assertNotIn('resource_class', data['nodes'][0])
+        new_data = self.get_json(
+            '/nodes/detail', headers={api_base.Version.string: '1.21'})
+        self.assertEqual(node.resource_class,
+                         new_data['nodes'][0]["resource_class"])
 
     def test_many(self):
         nodes = []
@@ -513,7 +560,7 @@ class TestListNodes(test_api_base.BaseApiTest):
         data = self.get_json('/nodes?instance_uuid=%s' % instance_uuid,
                              headers={api_base.Version.string: "1.5"})
 
-        self.assertThat(data['nodes'], HasLength(1))
+        self.assertThat(data['nodes'], matchers.HasLength(1))
         self.assertEqual(node['instance_uuid'],
                          data['nodes'][0]["instance_uuid"])
 
@@ -525,7 +572,7 @@ class TestListNodes(test_api_base.BaseApiTest):
 
         data = self.get_json('/nodes?instance_uuid=%s' % wrong_uuid)
 
-        self.assertThat(data['nodes'], HasLength(0))
+        self.assertThat(data['nodes'], matchers.HasLength(0))
 
     def test_node_by_instance_uuid_invalid_uuid(self):
         response = self.get_json('/nodes?instance_uuid=fake',
@@ -571,13 +618,13 @@ class TestListNodes(test_api_base.BaseApiTest):
 
         data = self.get_json('/nodes?associated=False&limit=2')
 
-        self.assertThat(data['nodes'], HasLength(2))
+        self.assertThat(data['nodes'], matchers.HasLength(2))
         self.assertIn(data['nodes'][0]['uuid'], unassociated_nodes)
 
     def test_next_link_with_association(self):
         self._create_association_test_nodes()
         data = self.get_json('/nodes/?limit=3&associated=True')
-        self.assertThat(data['nodes'], HasLength(3))
+        self.assertThat(data['nodes'], matchers.HasLength(3))
         self.assertIn('associated=True', data['next'])
 
     def test_detail_with_association_filter(self):
@@ -590,7 +637,7 @@ class TestListNodes(test_api_base.BaseApiTest):
     def test_next_link_with_association_with_detail(self):
         self._create_association_test_nodes()
         data = self.get_json('/nodes/detail?limit=3&associated=true')
-        self.assertThat(data['nodes'], HasLength(3))
+        self.assertThat(data['nodes'], matchers.HasLength(3))
         self.assertIn('driver', data['nodes'][0])
         self.assertIn('associated=True', data['next'])
 
@@ -722,6 +769,75 @@ class TestListNodes(test_api_base.BaseApiTest):
             expect_errors=True)
         self.assertEqual(http_client.NOT_ACCEPTABLE, response.status_code)
         self.assertTrue(response.json['error_message'])
+
+    def _test_get_nodes_by_resource_class(self, detail=False):
+        if detail:
+            base_url = '/nodes/detail?resource_class=%s'
+        else:
+            base_url = '/nodes?resource_class=%s'
+
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid(),
+                                          driver='fake',
+                                          resource_class='foo')
+        node1 = obj_utils.create_test_node(self.context,
+                                           uuid=uuidutils.generate_uuid(),
+                                           driver='fake',
+                                           resource_class='bar')
+
+        data = self.get_json(base_url % 'foo',
+                             headers={api_base.Version.string: "1.21"})
+        uuids = [n['uuid'] for n in data['nodes']]
+        self.assertIn(node.uuid, uuids)
+        self.assertNotIn(node1.uuid, uuids)
+        data = self.get_json(base_url % 'bar',
+                             headers={api_base.Version.string: "1.21"})
+        uuids = [n['uuid'] for n in data['nodes']]
+        self.assertIn(node1.uuid, uuids)
+        self.assertNotIn(node.uuid, uuids)
+
+    def test_get_nodes_by_resource_class(self):
+        self._test_get_nodes_by_resource_class(detail=False)
+
+    def test_get_nodes_by_resource_class_detail(self):
+        self._test_get_nodes_by_resource_class(detail=True)
+
+    def _test_get_nodes_by_invalid_resource_class(self, detail=False):
+        if detail:
+            base_url = '/nodes/detail?resource_class=%s'
+        else:
+            base_url = '/nodes?resource_class=%s'
+
+        data = self.get_json(base_url % 'test',
+                             headers={api_base.Version.string: "1.21"})
+        self.assertEqual(0, len(data['nodes']))
+
+    def test_get_nodes_by_invalid_resource_class(self):
+        self._test_get_nodes_by_invalid_resource_class(detail=False)
+
+    def test_get_nodes_by_invalid_resource_class_detail(self):
+        self._test_get_nodes_by_invalid_resource_class(detail=True)
+
+    def _test_get_nodes_by_resource_class_invalid_api_version(self,
+                                                              detail=False):
+        if detail:
+            base_url = '/nodes/detail?resource_class=%s'
+        else:
+            base_url = '/nodes?resource_class=%s'
+
+        response = self.get_json(
+            base_url % 'fake',
+            headers={api_base.Version.string: str(api_v1.MIN_VER)},
+            expect_errors=True)
+        self.assertEqual(http_client.NOT_ACCEPTABLE, response.status_code)
+        self.assertTrue(response.json['error_message'])
+
+    def test_get_nodes_by_resource_class_invalid_api_version(self):
+        self._test_get_nodes_by_resource_class_invalid_api_version(
+            detail=False)
+
+    def test_get_nodes_by_resource_class_invalid_api_version_detail(self):
+        self._test_get_nodes_by_resource_class_invalid_api_version(detail=True)
 
     def test_get_console_information(self):
         node = obj_utils.create_test_node(self.context)
@@ -1390,6 +1506,130 @@ class TestPatch(test_api_base.BaseApiTest):
             self.assertEqual('application/json', response.content_type)
             self.assertEqual(http_client.OK, response.status_code)
 
+    def test_update_network_interface(self):
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid())
+        self.mock_update_node.return_value = node
+        network_interface = 'flat'
+        headers = {api_base.Version.string: str(api_v1.MAX_VER)}
+        response = self.patch_json('/nodes/%s' % node.uuid,
+                                   [{'path': '/network_interface',
+                                     'value': network_interface,
+                                     'op': 'add'}],
+                                   headers=headers)
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.OK, response.status_code)
+
+    def test_update_network_interface_null_sets_default(self):
+        CONF.set_override('default_network_interface', 'neutron')
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid(),
+                                          network_interface='flat')
+        self.mock_update_node.return_value = node
+        network_interface = 'neutron'
+        headers = {api_base.Version.string: str(api_v1.MAX_VER)}
+        response = self.patch_json('/nodes/%s' % node.uuid,
+                                   [{'path': '/network_interface',
+                                     'value': None,
+                                     'op': 'add'}],
+                                   headers=headers)
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.OK, response.status_code)
+        # check the node we pass to updated_node
+        node_arg = self.mock_update_node.call_args[0][1]
+        self.assertEqual(network_interface, node_arg['network_interface'])
+
+    def test_update_network_interface_remove_sets_default(self):
+        CONF.set_override('default_network_interface', 'neutron')
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid(),
+                                          network_interface='flat')
+        self.mock_update_node.return_value = node
+        network_interface = 'neutron'
+        headers = {api_base.Version.string: str(api_v1.MAX_VER)}
+        response = self.patch_json('/nodes/%s' % node.uuid,
+                                   [{'path': '/network_interface',
+                                     'op': 'remove'}],
+                                   headers=headers)
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.OK, response.status_code)
+        # check the node we pass to updated_node
+        node_arg = self.mock_update_node.call_args[0][1]
+        self.assertEqual(network_interface, node_arg['network_interface'])
+
+    def test_update_network_interface_old_api(self):
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid())
+        self.mock_update_node.return_value = node
+        network_interface = 'flat'
+        headers = {api_base.Version.string: '1.15'}
+        response = self.patch_json('/nodes/%s' % node.uuid,
+                                   [{'path': '/network_interface',
+                                     'value': network_interface,
+                                     'op': 'add'}],
+                                   headers=headers,
+                                   expect_errors=True)
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.NOT_ACCEPTABLE, response.status_code)
+
+    def test_update_resource_class(self):
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid())
+        self.mock_update_node.return_value = node
+        resource_class = 'foo'
+        headers = {api_base.Version.string: '1.21'}
+        response = self.patch_json('/nodes/%s' % node.uuid,
+                                   [{'path': '/resource_class',
+                                     'value': resource_class,
+                                     'op': 'add'}],
+                                   headers=headers)
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.OK, response.status_code)
+
+    def test_update_resource_class_old_api(self):
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid())
+        self.mock_update_node.return_value = node
+        resource_class = 'foo'
+        headers = {api_base.Version.string: '1.20'}
+        response = self.patch_json('/nodes/%s' % node.uuid,
+                                   [{'path': '/resource_class',
+                                     'value': resource_class,
+                                     'op': 'add'}],
+                                   headers=headers,
+                                   expect_errors=True)
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.NOT_ACCEPTABLE, response.status_code)
+
+    def test_update_resource_class_max_length(self):
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid())
+        self.mock_update_node.return_value = node
+        resource_class = 'f' * 80
+        headers = {api_base.Version.string: '1.21'}
+        response = self.patch_json('/nodes/%s' % node.uuid,
+                                   [{'path': '/resource_class',
+                                     'value': resource_class,
+                                     'op': 'add'}],
+                                   headers=headers)
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.OK, response.status_code)
+
+    def test_update_resource_class_too_long(self):
+        node = obj_utils.create_test_node(self.context,
+                                          uuid=uuidutils.generate_uuid())
+        self.mock_update_node.return_value = node
+        resource_class = 'f' * 81
+        headers = {api_base.Version.string: '1.21'}
+        response = self.patch_json('/nodes/%s' % node.uuid,
+                                   [{'path': '/resource_class',
+                                     'value': resource_class,
+                                     'op': 'add'}],
+                                   headers=headers,
+                                   expect_errors=True)
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.BAD_REQUEST, response.status_code)
+
 
 class TestPost(test_api_base.BaseApiTest):
 
@@ -1402,13 +1642,16 @@ class TestPost(test_api_base.BaseApiTest):
         self.addCleanup(p.stop)
 
     @mock.patch.object(timeutils, 'utcnow')
-    def test_create_node(self, mock_utcnow):
-        ndict = test_api_utils.post_get_test_node()
+    def _test_create_node(self, mock_utcnow, headers=None, **kwargs):
+        headers = headers or {}
+        ndict = test_api_utils.post_get_test_node(**kwargs)
         test_time = datetime.datetime(2000, 1, 1, 0, 0)
         mock_utcnow.return_value = test_time
-        response = self.post_json('/nodes', ndict)
+        response = self.post_json('/nodes', ndict,
+                                  headers=headers)
         self.assertEqual(http_client.CREATED, response.status_int)
-        result = self.get_json('/nodes/%s' % ndict['uuid'])
+        result = self.get_json('/nodes/%s' % ndict['uuid'],
+                               headers=headers)
         self.assertEqual(ndict['uuid'], result['uuid'])
         self.assertFalse(result['updated_at'])
         return_created_at = timeutils.parse_isotime(
@@ -1419,6 +1662,23 @@ class TestPost(test_api_base.BaseApiTest):
         expected_location = '/v1/nodes/%s' % ndict['uuid']
         self.assertEqual(urlparse.urlparse(response.location).path,
                          expected_location)
+        return result
+
+    def test_create_node(self):
+        self._test_create_node()
+
+    def test_create_node_explicit_network_interface(self):
+        headers = {api_base.Version.string: '1.20'}
+        result = self._test_create_node(headers=headers,
+                                        network_interface='neutron')
+        self.assertEqual('neutron', result['network_interface'])
+
+    def test_create_node_default_network_interface(self):
+        CONF.set_override('default_network_interface', 'neutron')
+        CONF.set_override('enabled_network_interfaces', 'flat,noop,neutron')
+        headers = {api_base.Version.string: '1.20'}
+        result = self._test_create_node(headers=headers)
+        self.assertEqual('neutron', result['network_interface'])
 
     def test_create_node_name_empty_invalid(self):
         ndict = test_api_utils.post_get_test_node(name='')
@@ -1702,6 +1962,53 @@ class TestPost(test_api_base.BaseApiTest):
         self.assertEqual(return_value, data)
         # Assert RPC method wasn't called this time
         self.assertFalse(get_methods_mock.called)
+
+    def test_create_node_network_interface(self):
+        ndict = test_api_utils.post_get_test_node(
+            network_interface='flat')
+        response = self.post_json('/nodes', ndict,
+                                  headers={api_base.Version.string:
+                                           str(api_v1.MAX_VER)})
+        self.assertEqual(http_client.CREATED, response.status_int)
+        result = self.get_json('/nodes/%s' % ndict['uuid'],
+                               headers={api_base.Version.string:
+                                        str(api_v1.MAX_VER)})
+        self.assertEqual('flat', result['network_interface'])
+
+    def test_create_node_network_interface_old_api_version(self):
+        ndict = test_api_utils.post_get_test_node(
+            network_interface='flat')
+        response = self.post_json('/nodes', ndict, expect_errors=True)
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.NOT_ACCEPTABLE, response.status_int)
+
+    def test_create_node_invalid_network_interface(self):
+        ndict = test_api_utils.post_get_test_node(
+            network_interface='foo')
+        response = self.post_json('/nodes', ndict, expect_errors=True,
+                                  headers={api_base.Version.string:
+                                           str(api_v1.MAX_VER)})
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.BAD_REQUEST, response.status_int)
+
+    def test_create_node_resource_class(self):
+        ndict = test_api_utils.post_get_test_node(
+            resource_class='foo')
+        response = self.post_json('/nodes', ndict,
+                                  headers={api_base.Version.string:
+                                           str(api_v1.MAX_VER)})
+        self.assertEqual(http_client.CREATED, response.status_int)
+        result = self.get_json('/nodes/%s' % ndict['uuid'],
+                               headers={api_base.Version.string:
+                                        str(api_v1.MAX_VER)})
+        self.assertEqual('foo', result['resource_class'])
+
+    def test_create_node_resource_class_old_api_version(self):
+        ndict = test_api_utils.post_get_test_node(
+            resource_class='foo')
+        response = self.post_json('/nodes', ndict, expect_errors=True)
+        self.assertEqual('application/json', response.content_type)
+        self.assertEqual(http_client.NOT_ACCEPTABLE, response.status_int)
 
 
 class TestDelete(test_api_base.BaseApiTest):

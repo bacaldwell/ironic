@@ -31,6 +31,7 @@ from ironic.drivers.modules import agent_client
 from ironic.drivers.modules import deploy_utils
 from ironic.drivers.modules import fake
 from ironic.drivers.modules import pxe
+from ironic.drivers import utils as driver_utils
 from ironic.tests.unit.conductor import mgr_utils
 from ironic.tests.unit.db import base as db_base
 from ironic.tests.unit.db import utils as db_utils
@@ -515,6 +516,25 @@ class TestAgentDeploy(db_base.DbTestCase):
             self.assertFalse(pxe_prepare_ramdisk_mock.called)
             self.assertFalse(add_provisioning_net_mock.called)
 
+    @mock.patch('ironic.drivers.modules.network.flat.FlatNetwork.'
+                'add_provisioning_network', autospec=True)
+    @mock.patch.object(pxe.PXEBoot, 'prepare_ramdisk')
+    @mock.patch.object(deploy_utils, 'build_agent_options')
+    @mock.patch.object(agent, 'build_instance_info_for_deploy')
+    def test_prepare_adopting(
+            self, build_instance_info_mock, build_options_mock,
+            pxe_prepare_ramdisk_mock, add_provisioning_net_mock):
+        with task_manager.acquire(
+                self.context, self.node['uuid'], shared=False) as task:
+            task.node.provision_state = states.ADOPTING
+
+            self.driver.prepare(task)
+
+            self.assertFalse(build_instance_info_mock.called)
+            self.assertFalse(build_options_mock.called)
+            self.assertFalse(pxe_prepare_ramdisk_mock.called)
+            self.assertFalse(add_provisioning_net_mock.called)
+
     @mock.patch('ironic.common.dhcp_factory.DHCPFactory._set_dhcp_provider')
     @mock.patch('ironic.common.dhcp_factory.DHCPFactory.clean_dhcp')
     @mock.patch.object(pxe.PXEBoot, 'clean_up_ramdisk')
@@ -552,7 +572,8 @@ class TestAgentDeploy(db_base.DbTestCase):
             steps = self.driver.get_clean_steps(task)
             mock_get_clean_steps.assert_called_once_with(
                 task, interface='deploy',
-                override_priorities={'erase_devices': None})
+                override_priorities={'erase_devices': None,
+                                     'erase_devices_metadata': None})
         self.assertEqual(mock_steps, steps)
 
     @mock.patch('ironic.drivers.modules.deploy_utils.agent_get_clean_steps',
@@ -561,6 +582,7 @@ class TestAgentDeploy(db_base.DbTestCase):
         # Test that we can override the priority of get clean steps
         # Use 0 because it is an edge case (false-y) and used in devstack
         self.config(erase_devices_priority=0, group='deploy')
+        self.config(erase_devices_metadata_priority=0, group='deploy')
         mock_steps = [{'priority': 10, 'interface': 'deploy',
                        'step': 'erase_devices'}]
         mock_get_clean_steps.return_value = mock_steps
@@ -568,7 +590,8 @@ class TestAgentDeploy(db_base.DbTestCase):
             self.driver.get_clean_steps(task)
             mock_get_clean_steps.assert_called_once_with(
                 task, interface='deploy',
-                override_priorities={'erase_devices': 0})
+                override_priorities={'erase_devices': 0,
+                                     'erase_devices_metadata': 0})
 
     @mock.patch.object(deploy_utils, 'prepare_inband_cleaning', autospec=True)
     def test_prepare_cleaning(self, prepare_inband_cleaning_mock):
@@ -607,6 +630,12 @@ class TestAgentDeploy(db_base.DbTestCase):
             self.driver.tear_down_cleaning(task)
             tear_down_cleaning_mock.assert_called_once_with(
                 task, manage_boot=False)
+
+    def test_heartbeat(self):
+        with task_manager.acquire(self.context, self.node.uuid,
+                                  shared=True) as task:
+            self.driver.heartbeat(task, 'url')
+            self.assertFalse(task.shared)
 
 
 class TestAgentVendor(db_base.DbTestCase):
@@ -875,6 +904,7 @@ class TestAgentVendor(db_base.DbTestCase):
             self.assertEqual(states.NOSTATE, task.node.target_provision_state)
             self.assertFalse(uuid_mock.called)
 
+    @mock.patch.object(driver_utils, 'collect_ramdisk_logs', autospec=True)
     @mock.patch.object(agent.AgentVendorInterface, '_get_uuid_from_result',
                        autospec=True)
     @mock.patch.object(manager_utils, 'node_power_action', autospec=True)
@@ -887,12 +917,10 @@ class TestAgentVendor(db_base.DbTestCase):
     @mock.patch('ironic.drivers.modules.agent.AgentVendorInterface'
                 '.check_deploy_success', autospec=True)
     @mock.patch.object(pxe.PXEBoot, 'clean_up_ramdisk', autospec=True)
-    def test_reboot_to_instance_boot_error(self, clean_pxe_mock,
-                                           check_deploy_mock,
-                                           prepare_mock, power_off_mock,
-                                           get_power_state_mock,
-                                           node_power_action_mock,
-                                           uuid_mock):
+    def test_reboot_to_instance_boot_error(
+            self, clean_pxe_mock, check_deploy_mock, prepare_mock,
+            power_off_mock, get_power_state_mock, node_power_action_mock,
+            uuid_mock, collect_ramdisk_logs_mock):
         check_deploy_mock.return_value = "Error"
         uuid_mock.return_value = None
         self.node.provision_state = states.DEPLOYWAIT
@@ -911,6 +939,7 @@ class TestAgentVendor(db_base.DbTestCase):
             check_deploy_mock.assert_called_once_with(mock.ANY, task.node)
             self.assertEqual(states.DEPLOYFAIL, task.node.provision_state)
             self.assertEqual(states.ACTIVE, task.node.target_provision_state)
+            collect_ramdisk_logs_mock.assert_called_once_with(task.node)
 
     @mock.patch.object(agent_base_vendor.BaseAgentVendor,
                        'configure_local_boot', autospec=True)

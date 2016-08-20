@@ -36,6 +36,7 @@ import subprocess
 import tempfile
 import time
 
+from ironic_lib import metrics_utils
 from ironic_lib import utils as ironic_utils
 from oslo_concurrency import processutils
 from oslo_config import cfg
@@ -56,6 +57,7 @@ from ironic.common import utils
 from ironic.conductor import task_manager
 from ironic.drivers import base
 from ironic.drivers.modules import console_utils
+from ironic.drivers.modules import deploy_utils
 from ironic.drivers import utils as driver_utils
 
 
@@ -68,6 +70,8 @@ CONF.import_opt('min_command_interval',
                 group='ipmi')
 
 LOG = logging.getLogger(__name__)
+
+METRICS = metrics_utils.get_metrics_logger(__name__)
 
 VALID_PRIV_LEVELS = ['ADMINISTRATOR', 'CALLBACK', 'OPERATOR', 'USER']
 
@@ -134,6 +138,18 @@ ipmitool_command_options = {
 # be in ipmitool which means the string should always be returned in this
 # form regardless of locale.
 IPMITOOL_RETRYABLE_FAILURES = ['insufficient resources for session']
+
+# NOTE(lucasagomes): A mapping for the boot devices and their hexadecimal
+# value. For more information about these values see the "Set System Boot
+# Options Command" section of the link below (page 418)
+# http://www.intel.com/content/www/us/en/servers/ipmi/ipmi-second-gen-interface-spec-v2-rev1-1.html  # noqa
+BOOT_DEVICE_HEXA_MAP = {
+    boot_devices.PXE: '0x04',
+    boot_devices.DISK: '0x08',
+    boot_devices.CDROM: '0x14',
+    boot_devices.BIOS: '0x18',
+    boot_devices.SAFE: '0x0c'
+}
 
 
 def _check_option_support(options):
@@ -355,11 +371,12 @@ def _parse_driver_info(node):
     }
 
 
-def _exec_ipmitool(driver_info, command):
+def _exec_ipmitool(driver_info, command, check_exit_code=None):
     """Execute the ipmitool command.
 
     :param driver_info: the ipmitool parameters for accessing a node.
     :param command: the ipmitool command to be executed.
+    :param check_exit_code: Single bool, int, or list of allowed exit codes.
     :returns: (stdout, stderr) from executing the command.
     :raises: PasswordFileFailedToCreate from creating or writing to the
              temporary file.
@@ -414,6 +431,9 @@ def _exec_ipmitool(driver_info, command):
         # Resetting the list that will be utilized so the password arguments
         # from any previous execution are preserved.
         cmd_args = args[:]
+        extra_args = {}
+        if check_exit_code is not None:
+            extra_args['check_exit_code'] = check_exit_code
         # 'ipmitool' command will prompt password if there is no '-f'
         # option, we set it to '\0' to write a password file to support
         # empty password
@@ -422,7 +442,7 @@ def _exec_ipmitool(driver_info, command):
             cmd_args.append(pw_file)
             cmd_args.extend(command.split(" "))
             try:
-                out, err = utils.execute(*cmd_args)
+                out, err = utils.execute(*cmd_args, **extra_args)
                 return out, err
             except processutils.ProcessExecutionError as e:
                 with excutils.save_and_reraise_exception() as ctxt:
@@ -646,6 +666,7 @@ def _parse_ipmi_sensors_data(node, sensors_data):
     return sensors_data_dict
 
 
+@METRICS.timer('send_raw')
 @task_manager.require_exclusive_lock
 def send_raw(task, raw_bytes):
     """Send raw bytes to the BMC. Bytes should be a string of bytes.
@@ -678,6 +699,7 @@ def send_raw(task, raw_bytes):
     return out, err
 
 
+@METRICS.timer('dump_sdr')
 def dump_sdr(task, file_path):
     """Dump SDR data to a file.
 
@@ -743,6 +765,7 @@ class IPMIPower(base.PowerInterface):
     def get_properties(self):
         return COMMON_PROPERTIES
 
+    @METRICS.timer('IPMIPower.validate')
     def validate(self, task):
         """Validate driver_info for ipmitool driver.
 
@@ -759,6 +782,7 @@ class IPMIPower(base.PowerInterface):
         #             This is a temporary measure to mitigate problems while
         #             1314954 and 1314961 are resolved.
 
+    @METRICS.timer('IPMIPower.get_power_state')
     def get_power_state(self, task):
         """Get the current power state of the task's node.
 
@@ -773,6 +797,7 @@ class IPMIPower(base.PowerInterface):
         driver_info = _parse_driver_info(task.node)
         return _power_status(driver_info)
 
+    @METRICS.timer('IPMIPower.set_power_state')
     @task_manager.require_exclusive_lock
     def set_power_state(self, task, pstate):
         """Turn the power on or off.
@@ -800,6 +825,7 @@ class IPMIPower(base.PowerInterface):
         if state != pstate:
             raise exception.PowerStateFailure(pstate=pstate)
 
+    @METRICS.timer('IPMIPower.reboot')
     @task_manager.require_exclusive_lock
     def reboot(self, task):
         """Cycles the power to the task's node.
@@ -835,6 +861,7 @@ class IPMIManagement(base.ManagementInterface):
                          "the system path when checking ipmitool version"))
         _check_temp_dir()
 
+    @METRICS.timer('IPMIManagement.validate')
     def validate(self, task):
         """Check that 'driver_info' contains IPMI credentials.
 
@@ -857,9 +884,9 @@ class IPMIManagement(base.ManagementInterface):
                   in :mod:`ironic.common.boot_devices`.
 
         """
-        return [boot_devices.PXE, boot_devices.DISK, boot_devices.CDROM,
-                boot_devices.BIOS, boot_devices.SAFE]
+        return list(BOOT_DEVICE_HEXA_MAP)
 
+    @METRICS.timer('IPMIManagement.set_boot_device')
     @task_manager.require_exclusive_lock
     def set_boot_device(self, task, device, persistent=False):
         """Set the boot device for the task's node.
@@ -897,9 +924,32 @@ class IPMIManagement(base.ManagementInterface):
             # persistent or we do not have admin rights.
             persistent = False
 
-        cmd = "chassis bootdev %s" % device
+        # FIXME(lucasagomes): Older versions of the ipmitool utility
+        # are not able to set the options "efiboot" and "persistent"
+        # at the same time, combining other options seems to work fine,
+        # except efiboot. Newer versions of ipmitool (1.8.17) does fix
+        # this problem but (some) distros still packaging an older version.
+        # To workaround this problem for now we can make use of sending
+        # raw bytes to set the boot device for a node in persistent +
+        # uefi mode, this will work with newer and older versions of the
+        # ipmitool utility. Also see:
+        # https://bugs.launchpad.net/ironic/+bug/1611306
+        boot_mode = deploy_utils.get_boot_mode_for_deploy(task.node)
+        if persistent and boot_mode == 'uefi':
+            raw_cmd = ('0x00 0x08 0x05 0xe0 %s 0x00 0x00 0x00' %
+                       BOOT_DEVICE_HEXA_MAP[device])
+            send_raw(task, raw_cmd)
+            return
+
+        options = []
         if persistent:
-            cmd = cmd + " options=persistent"
+            options.append('persistent')
+        if boot_mode == 'uefi':
+            options.append('efiboot')
+
+        cmd = "chassis bootdev %s" % device
+        if options:
+            cmd = cmd + " options=%s" % ','.join(options)
         driver_info = _parse_driver_info(task.node)
         try:
             out, err = _exec_ipmitool(driver_info, cmd)
@@ -911,6 +961,7 @@ class IPMIManagement(base.ManagementInterface):
                         {'node': driver_info['uuid'], 'cmd': cmd, 'error': e})
             raise exception.IPMIFailure(cmd=cmd)
 
+    @METRICS.timer('IPMIManagement.get_boot_device')
     def get_boot_device(self, task):
         """Get the current boot device for the task's node.
 
@@ -972,6 +1023,7 @@ class IPMIManagement(base.ManagementInterface):
         response['persistent'] = 'Options apply to all future boots' in out
         return response
 
+    @METRICS.timer('IPMIManagement.get_sensors_data')
     def get_sensors_data(self, task):
         """Get sensors data.
 
@@ -1009,6 +1061,7 @@ class VendorPassthru(base.VendorInterface):
                          "the system path when checking ipmitool version"))
         _check_temp_dir()
 
+    @METRICS.timer('VendorPassthru.send_raw')
     @base.passthru(['POST'])
     @task_manager.require_exclusive_lock
     def send_raw(self, task, http_method, raw_bytes):
@@ -1024,6 +1077,7 @@ class VendorPassthru(base.VendorInterface):
         """
         send_raw(task, raw_bytes)
 
+    @METRICS.timer('VendorPassthru.bmc_reset')
     @base.passthru(['POST'])
     @task_manager.require_exclusive_lock
     def bmc_reset(self, task, http_method, warm=True):
@@ -1064,6 +1118,7 @@ class VendorPassthru(base.VendorInterface):
     def get_properties(self):
         return COMMON_PROPERTIES
 
+    @METRICS.timer('VendorPassthru.validate')
     def validate(self, task, method, **kwargs):
         """Validate vendor-specific actions.
 
@@ -1090,8 +1145,8 @@ class VendorPassthru(base.VendorInterface):
         _parse_driver_info(task.node)
 
 
-class IPMIShellinaboxConsole(base.ConsoleInterface):
-    """A ConsoleInterface that uses ipmitool and shellinabox."""
+class IPMIConsole(base.ConsoleInterface):
+    """A base ConsoleInterface that uses ipmitool."""
 
     def __init__(self):
         try:
@@ -1108,6 +1163,7 @@ class IPMIShellinaboxConsole(base.ConsoleInterface):
         d.update(CONSOLE_PROPERTIES)
         return d
 
+    @METRICS.timer('IPMIConsole.validate')
     def validate(self, task):
         """Validate the Node console info.
 
@@ -1128,10 +1184,11 @@ class IPMIShellinaboxConsole(base.ConsoleInterface):
                 "Check the 'ipmi_protocol_version' parameter in "
                 "node's driver_info"))
 
-    def start_console(self, task):
+    def _start_console(self, driver_info, start_method):
         """Start a remote console for the node.
 
-        :param task: a task from TaskManager
+        :param driver_info: the parameters for accessing a node
+        :param start_method: console_utils method to start console
         :raises: InvalidParameterValue if required ipmi parameters are missing
         :raises: PasswordFileFailedToCreate if unable to create a file
                  containing the password
@@ -1139,8 +1196,6 @@ class IPMIShellinaboxConsole(base.ConsoleInterface):
                  created
         :raises: ConsoleSubprocessFailed when invoking the subprocess failed
         """
-        driver_info = _parse_driver_info(task.node)
-
         path = _console_pwfile_path(driver_info['uuid'])
         pw_file = console_utils.make_persistent_password_file(
             path, driver_info['password'] or '\0')
@@ -1162,13 +1217,32 @@ class IPMIShellinaboxConsole(base.ConsoleInterface):
             ipmi_cmd += " -v"
         ipmi_cmd += " sol activate"
         try:
-            console_utils.start_shellinabox_console(driver_info['uuid'],
-                                                    driver_info['port'],
-                                                    ipmi_cmd)
+            start_method(driver_info['uuid'], driver_info['port'], ipmi_cmd)
         except (exception.ConsoleError, exception.ConsoleSubprocessFailed):
             with excutils.save_and_reraise_exception():
                 ironic_utils.unlink_without_raise(path)
 
+
+class IPMIShellinaboxConsole(IPMIConsole):
+    """A ConsoleInterface that uses ipmitool and shellinabox."""
+
+    @METRICS.timer('IPMIShellinaboxConsole.start_console')
+    def start_console(self, task):
+        """Start a remote console for the node.
+
+        :param task: a task from TaskManager
+        :raises: InvalidParameterValue if required ipmi parameters are missing
+        :raises: PasswordFileFailedToCreate if unable to create a file
+                 containing the password
+        :raises: ConsoleError if the directory for the PID file cannot be
+                 created
+        :raises: ConsoleSubprocessFailed when invoking the subprocess failed
+        """
+        driver_info = _parse_driver_info(task.node)
+        self._start_console(driver_info,
+                            console_utils.start_shellinabox_console)
+
+    @METRICS.timer('IPMIShellinaboxConsole.stop_console')
     def stop_console(self, task):
         """Stop the remote console session for the node.
 
@@ -1181,8 +1255,64 @@ class IPMIShellinaboxConsole(base.ConsoleInterface):
             ironic_utils.unlink_without_raise(
                 _console_pwfile_path(task.node.uuid))
 
+    @METRICS.timer('IPMIShellinaboxConsole.get_console')
     def get_console(self, task):
         """Get the type and connection information about the console."""
         driver_info = _parse_driver_info(task.node)
         url = console_utils.get_shellinabox_console_url(driver_info['port'])
         return {'type': 'shellinabox', 'url': url}
+
+
+class IPMISocatConsole(IPMIConsole):
+    """A ConsoleInterface that uses ipmitool and socat."""
+
+    @METRICS.timer('IPMISocatConsole.start_console')
+    def start_console(self, task):
+        """Start a remote console for the node.
+
+        :param task: a task from TaskManager
+        :raises: InvalidParameterValue if required ipmi parameters are missing
+        :raises: PasswordFileFailedToCreate if unable to create a file
+                 containing the password
+        :raises: ConsoleError if the directory for the PID file cannot be
+                 created
+        :raises: ConsoleSubprocessFailed when invoking the subprocess failed
+        """
+        driver_info = _parse_driver_info(task.node)
+        try:
+            self._exec_stop_console(driver_info)
+        except OSError:
+            # We need to drop any existing sol sessions with sol deactivate.
+            # OSError is raised when sol session is already deactivated,
+            # so we can ignore it.
+            pass
+        self._start_console(driver_info, console_utils.start_socat_console)
+
+    @METRICS.timer('IPMISocatConsole.stop_console')
+    def stop_console(self, task):
+        """Stop the remote console session for the node.
+
+        :param task: a task from TaskManager
+        :raises: ConsoleError if unable to stop the console
+        """
+        driver_info = _parse_driver_info(task.node)
+        try:
+            console_utils.stop_socat_console(task.node.uuid)
+        finally:
+            ironic_utils.unlink_without_raise(
+                _console_pwfile_path(task.node.uuid))
+        self._exec_stop_console(driver_info)
+
+    def _exec_stop_console(self, driver_info):
+        cmd = "sol deactivate"
+        _exec_ipmitool(driver_info, cmd, check_exit_code=[0, 1])
+
+    @METRICS.timer('IPMISocatConsole.get_console')
+    def get_console(self, task):
+        """Get the type and connection information about the console.
+
+        :param task: a task from TaskManager
+        """
+        driver_info = _parse_driver_info(task.node)
+        url = console_utils.get_socat_console_url(driver_info['port'])
+        return {'type': 'socat', 'url': url}

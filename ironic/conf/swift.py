@@ -17,6 +17,7 @@
 from oslo_config import cfg
 
 from ironic.common.i18n import _
+from ironic.conf import auth
 
 opts = [
     cfg.IntOpt('swift_max_retries',
@@ -28,3 +29,8 @@ opts = [
 
 def register_opts(conf):
     conf.register_opts(opts, group='swift')
+    auth.register_auth_opts(conf, 'swift')
+
+
+def list_opts():
+    return auth.add_auth_opts(opts)

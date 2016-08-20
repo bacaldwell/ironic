@@ -15,11 +15,12 @@
 PXE Boot Interface
 """
 
+import filecmp
 import os
 import shutil
 
+from ironic_lib import metrics_utils
 from ironic_lib import utils as ironic_utils
-from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import fileutils
 
@@ -31,72 +32,17 @@ from ironic.common.i18n import _
 from ironic.common.i18n import _LE
 from ironic.common.i18n import _LW
 from ironic.common import image_service as service
-from ironic.common import paths
 from ironic.common import pxe_utils
 from ironic.common import states
+from ironic.conf import CONF
 from ironic.drivers import base
 from ironic.drivers.modules import deploy_utils
 from ironic.drivers.modules import image_cache
 from ironic.drivers import utils as driver_utils
 
-
-pxe_opts = [
-    cfg.StrOpt('pxe_config_template',
-               default=paths.basedir_def(
-                   'drivers/modules/pxe_config.template'),
-               help=_('On ironic-conductor node, template file for PXE '
-                      'configuration.')),
-    cfg.StrOpt('uefi_pxe_config_template',
-               default=paths.basedir_def(
-                   'drivers/modules/elilo_efi_pxe_config.template'),
-               help=_('On ironic-conductor node, template file for PXE '
-                      'configuration for UEFI boot loader.')),
-    cfg.StrOpt('tftp_server',
-               default='$my_ip',
-               help=_("IP address of ironic-conductor node's TFTP server.")),
-    cfg.StrOpt('tftp_root',
-               default='/tftpboot',
-               help=_("ironic-conductor node's TFTP root path. The "
-                      "ironic-conductor must have read/write access to this "
-                      "path.")),
-    cfg.StrOpt('tftp_master_path',
-               default='/tftpboot/master_images',
-               help=_('On ironic-conductor node, directory where master TFTP '
-                      'images are stored on disk. '
-                      'Setting to <None> disables image caching.')),
-    # NOTE(dekehn): Additional boot files options may be created in the event
-    #  other architectures require different boot files.
-    cfg.StrOpt('pxe_bootfile_name',
-               default='pxelinux.0',
-               help=_('Bootfile DHCP parameter.')),
-    cfg.StrOpt('uefi_pxe_bootfile_name',
-               default='elilo.efi',
-               help=_('Bootfile DHCP parameter for UEFI boot mode.')),
-    cfg.BoolOpt('ipxe_enabled',
-                default=False,
-                help=_('Enable iPXE boot.')),
-    cfg.StrOpt('ipxe_boot_script',
-               default=paths.basedir_def(
-                   'drivers/modules/boot.ipxe'),
-               help=_('On ironic-conductor node, the path to the main iPXE '
-                      'script file.')),
-    cfg.IntOpt('ipxe_timeout',
-               default=0,
-               help=_('Timeout value (in seconds) for downloading an image '
-                      'via iPXE. Defaults to 0 (no timeout)')),
-    cfg.StrOpt('ip_version',
-               default='4',
-               choices=['4', '6'],
-               help=_('The IP version that will be used for PXE booting. '
-                      'Defaults to 4. EXPERIMENTAL')),
-]
-
 LOG = logging.getLogger(__name__)
 
-CONF = cfg.CONF
-CONF.register_opts(pxe_opts, group='pxe')
-CONF.import_opt('deploy_callback_timeout', 'ironic.conductor.manager',
-                group='conductor')
+METRICS = metrics_utils.get_metrics_logger(__name__)
 
 REQUIRED_PROPERTIES = {
     'deploy_kernel': _("UUID (from Glance) of the deployment kernel. "
@@ -266,6 +212,7 @@ def _build_pxe_config_options(task, pxe_info):
     return pxe_options
 
 
+@METRICS.timer('validate_boot_option_for_uefi')
 def validate_boot_option_for_uefi(node):
     """In uefi boot mode, validate if the boot option is compatible.
 
@@ -289,6 +236,7 @@ def validate_boot_option_for_uefi(node):
             {'node_uuid': node.uuid})
 
 
+@METRICS.timer('validate_boot_option_for_trusted_boot')
 def validate_boot_parameters_for_trusted_boot(node):
     """Check if boot parameters are valid for trusted boot."""
     boot_mode = deploy_utils.get_boot_mode_for_deploy(node)
@@ -365,6 +313,7 @@ class PXEBoot(base.BootInterface):
         """
         return COMMON_PROPERTIES
 
+    @METRICS.timer('PXEBoot.validate')
     def validate(self, task):
         """Validate the PXE-specific info for booting deploy/instance images.
 
@@ -423,6 +372,7 @@ class PXEBoot(base.BootInterface):
             props = ['kernel', 'ramdisk']
         deploy_utils.validate_image_properties(task.context, d_info, props)
 
+    @METRICS.timer('PXEBoot.prepare_ramdisk')
     def prepare_ramdisk(self, task, ramdisk_params):
         """Prepares the boot of Ironic ramdisk using PXE.
 
@@ -444,13 +394,14 @@ class PXEBoot(base.BootInterface):
         """
         node = task.node
 
-        # TODO(deva): optimize this if rerun on existing files
         if CONF.pxe.ipxe_enabled:
             # Copy the iPXE boot script to HTTP root directory
             bootfile_path = os.path.join(
                 CONF.deploy.http_root,
                 os.path.basename(CONF.pxe.ipxe_boot_script))
-            shutil.copyfile(CONF.pxe.ipxe_boot_script, bootfile_path)
+            if (not os.path.isfile(bootfile_path) or
+                not filecmp.cmp(CONF.pxe.ipxe_boot_script, bootfile_path)):
+                    shutil.copyfile(CONF.pxe.ipxe_boot_script, bootfile_path)
 
         dhcp_opts = pxe_utils.dhcp_options_for_instance(task)
         provider = dhcp_factory.DHCPFactory()
@@ -479,6 +430,7 @@ class PXEBoot(base.BootInterface):
         # the image kernel and ramdisk (Or even require it).
         _cache_ramdisk_kernel(task.context, node, pxe_info)
 
+    @METRICS.timer('PXEBoot.clean_up_ramdisk')
     def clean_up_ramdisk(self, task):
         """Cleans up the boot of ironic ramdisk.
 
@@ -499,6 +451,7 @@ class PXEBoot(base.BootInterface):
         else:
             _clean_up_pxe_env(task, images_info)
 
+    @METRICS.timer('PXEBoot.prepare_instance')
     def prepare_instance(self, task):
         """Prepares the boot of instance.
 
@@ -566,6 +519,7 @@ class PXEBoot(base.BootInterface):
             pxe_utils.clean_up_pxe_config(task)
             deploy_utils.try_set_boot_device(task, boot_devices.DISK)
 
+    @METRICS.timer('PXEBoot.clean_up_instance')
     def clean_up_instance(self, task):
         """Cleans up the boot of instance.
 

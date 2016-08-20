@@ -110,10 +110,20 @@ Configure the Identity service for the Bare Metal service
    and replace IRONIC_NODE with your Bare Metal service's API node::
 
     openstack endpoint create --region RegionOne \
+    baremetal admin http://IRONIC_NODE:6385
+    openstack endpoint create --region RegionOne \
+    baremetal public http://IRONIC_NODE:6385
+    openstack endpoint create --region RegionOne \
+    baremetal internal http://IRONIC_NODE:6385
+
+   If only keystone v2 API is available, use this command instead::
+
+    openstack endpoint create --region RegionOne \
     --publicurl http://IRONIC_NODE:6385 \
     --internalurl http://IRONIC_NODE:6385 \
     --adminurl http://IRONIC_NODE:6385 \
     baremetal
+
 
 Set up the database for Bare Metal
 ----------------------------------
@@ -424,6 +434,9 @@ Bare Metal service comes with an example file for configuring the
 
   - Modify the ``Directory`` directive to set the path to the Ironic API code.
 
+  - Modify the ``ErrorLog`` and ``CustomLog`` to redirect the logs
+    to the right directory (on Red Hat systems this is usually under
+    /var/log/httpd).
 
 4. Enable the apache ``ironic`` in site and reload::
 
@@ -466,8 +479,8 @@ Compute service's controller nodes and compute nodes.*
     firewall_driver=nova.virt.firewall.NoopFirewallDriver
 
     # The scheduler host manager class to use (string value)
-    #scheduler_host_manager=nova.scheduler.host_manager.HostManager
-    scheduler_host_manager=nova.scheduler.ironic_host_manager.IronicHostManager
+    #scheduler_host_manager=host_manager
+    scheduler_host_manager=ironic_host_manager
 
     # Virtual ram to physical ram allocation ratio which affects
     # all ram filters. This configuration specifies a global ratio
@@ -490,6 +503,14 @@ Compute service's controller nodes and compute nodes.*
     # its filtering decisions (boolean value)
     #scheduler_tracks_instance_changes=True
     scheduler_tracks_instance_changes=False
+
+    # New instances will be scheduled on a host chosen randomly from a subset
+    # of the N best hosts, where N is the value set by this option.  Valid
+    # values are 1 or greater. Any value less than one will be treated as 1.
+    # For ironic, this should be set to a number >= the number of ironic nodes
+    # to more evenly distribute instances across the nodes.
+    #scheduler_host_subset_size=1
+    scheduler_host_subset_size=9999999
 
 2. Change these configuration options in the ``ironic`` section.
    Replace:
@@ -634,6 +655,11 @@ An example of this is shown in the `Enrollment`_ section.
     --ip-version=4 --gateway=$GATEWAY_IP --allocation-pool \
     start=$START_IP,end=$END_IP --enable-dhcp
 
+Configuring Tenant Networks
+===========================
+
+See :ref:`multitenancy`
+
 .. _CleaningNetworkSetup:
 
 Configure the Bare Metal service for cleaning
@@ -654,9 +680,6 @@ Configure the Bare Metal service for cleaning
     [neutron]
     ...
 
-    # UUID of the network to create Neutron ports on, when booting
-    # to a ramdisk for cleaning using Neutron DHCP. (string value)
-    #cleaning_network_uuid=<None>
     cleaning_network_uuid = NETWORK_UUID
 
 #. Restart the Bare Metal service's ironic-conductor::
@@ -823,10 +846,10 @@ node(s) where ``ironic-conductor`` is running.
         sudo apt-get install xinetd tftpd-hpa syslinux-common pxelinux
 
     Fedora 21/RHEL7/CentOS7:
-        sudo yum install tftp-server syslinux-tftpboot
+        sudo yum install tftp-server syslinux-tftpboot xinetd
 
     Fedora 22 or higher:
-         sudo dnf install tftp-server syslinux-tftpboot
+         sudo dnf install tftp-server syslinux-tftpboot xinetd
 
 #. Using xinetd to provide a tftp server setup to serve ``/tftpboot``.
    Create or edit ``/etc/xinetd.d/tftp`` as below::
@@ -1443,7 +1466,7 @@ reboots won't happen via PXE or Virtual Media. Instead, it will boot from a
 local boot loader installed on the disk.
 
 It's important to note that in order for this to work the image being
-deployed with Bare Metal serivce **must** contain ``grub2`` installed within it.
+deployed with Bare Metal service **must** contain ``grub2`` installed within it.
 
 Enabling the local boot is different when Bare Metal service is used with
 Compute service and without it.
@@ -1905,6 +1928,9 @@ deployment. The list of support hints is:
 * wwn (STRING): unique storage identifier
 * wwn_with_extension (STRING): unique storage identifier with the vendor extension appended
 * wwn_vendor_extension (STRING): unique vendor storage identifier
+* rotational (BOOLEAN): whether it's a rotational device or not. This
+  hint makes it easier to distinguish HDDs (rotational) and SSDs (not
+  rotational) when choosing which disk Ironic should deploy the image onto.
 * name (STRING): the device name, e.g /dev/md0
 
 

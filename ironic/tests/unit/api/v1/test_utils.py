@@ -19,7 +19,7 @@ from oslo_config import cfg
 from oslo_utils import uuidutils
 import pecan
 from six.moves import http_client
-from webob.static import FileIter
+from webob import static
 import wsme
 
 from ironic.api.controllers.v1 import node as api_node
@@ -36,7 +36,7 @@ class TestApiUtils(base.TestCase):
 
     def test_validate_limit(self):
         limit = utils.validate_limit(10)
-        self.assertEqual(10, 10)
+        self.assertEqual(10, limit)
 
         # max limit
         limit = utils.validate_limit(999999999)
@@ -131,6 +131,34 @@ class TestApiUtils(base.TestCase):
                           utils.check_allow_specify_fields, ['foo'])
 
     @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allowed_fields_network_interface(self, mock_request):
+        mock_request.version.minor = 20
+        self.assertIsNone(
+            utils.check_allowed_fields(['network_interface']))
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allowed_fields_network_interface_fail(self, mock_request):
+        mock_request.version.minor = 19
+        self.assertRaises(
+            exception.NotAcceptable,
+            utils.check_allowed_fields,
+            ['network_interface'])
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allowed_fields_resource_class(self, mock_request):
+        mock_request.version.minor = 21
+        self.assertIsNone(
+            utils.check_allowed_fields(['resource_class']))
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allowed_fields_resource_class_fail(self, mock_request):
+        mock_request.version.minor = 20
+        self.assertRaises(
+            exception.NotAcceptable,
+            utils.check_allowed_fields,
+            ['resource_class'])
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
     def test_check_allow_specify_driver(self, mock_request):
         mock_request.version.minor = 16
         self.assertIsNone(utils.check_allow_specify_driver(['fake']))
@@ -140,6 +168,17 @@ class TestApiUtils(base.TestCase):
         mock_request.version.minor = 15
         self.assertRaises(exception.NotAcceptable,
                           utils.check_allow_specify_driver, ['fake'])
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allow_specify_resource_class(self, mock_request):
+        mock_request.version.minor = 21
+        self.assertIsNone(utils.check_allow_specify_resource_class(['foo']))
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_check_allow_specify_resource_class_fail(self, mock_request):
+        mock_request.version.minor = 20
+        self.assertRaises(exception.NotAcceptable,
+                          utils.check_allow_specify_resource_class, ['foo'])
 
     @mock.patch.object(pecan, 'request', spec_set=['version'])
     def test_check_allow_manage_verbs(self, mock_request):
@@ -231,6 +270,20 @@ class TestApiUtils(base.TestCase):
         self.assertTrue(utils.allow_port_advanced_net_fields())
         mock_request.version.minor = 18
         self.assertFalse(utils.allow_port_advanced_net_fields())
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_allow_network_interface(self, mock_request):
+        mock_request.version.minor = 20
+        self.assertTrue(utils.allow_network_interface())
+        mock_request.version.minor = 19
+        self.assertFalse(utils.allow_network_interface())
+
+    @mock.patch.object(pecan, 'request', spec_set=['version'])
+    def test_allow_resource_class(self, mock_request):
+        mock_request.version.minor = 21
+        self.assertTrue(utils.allow_resource_class())
+        mock_request.version.minor = 20
+        self.assertFalse(utils.allow_resource_class())
 
 
 class TestNodeIdent(base.TestCase):
@@ -390,7 +443,7 @@ class TestVendorPassthru(base.TestCase):
             'fake-data', 'fake-topic')
 
         # Assert file was attached to the response object
-        self.assertIsInstance(mock_response.app_iter, FileIter)
+        self.assertIsInstance(mock_response.app_iter, static.FileIter)
         self.assertEqual(expct_return_value,
                          mock_response.app_iter.file.read())
         # Assert response message is none

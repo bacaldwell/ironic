@@ -91,7 +91,8 @@ class ConductorManager(base_manager.BaseConductorManager):
 
     @messaging.expected_exceptions(exception.InvalidParameterValue,
                                    exception.MissingParameterValue,
-                                   exception.NodeLocked)
+                                   exception.NodeLocked,
+                                   exception.InvalidState)
     def update_node(self, context, node_obj):
         """Update a node with the supplied data.
 
@@ -112,6 +113,27 @@ class ConductorManager(base_manager.BaseConductorManager):
         delta = node_obj.obj_what_changed()
         if 'maintenance' in delta and not node_obj.maintenance:
             node_obj.maintenance_reason = None
+
+        if 'network_interface' in delta:
+            allowed_update_states = [states.ENROLL, states.INSPECTING,
+                                     states.MANAGEABLE]
+            if not (node_obj.provision_state in allowed_update_states or
+                    node_obj.maintenance):
+                action = _("Node %(node)s can not have network_interface "
+                           "updated unless it is in one of allowed "
+                           "(%(allowed)s) states or in maintenance mode.")
+                raise exception.InvalidState(
+                    action % {'node': node_obj.uuid,
+                              'allowed': ', '.join(allowed_update_states)})
+            net_iface = node_obj.network_interface
+            if net_iface not in CONF.enabled_network_interfaces:
+                raise exception.InvalidParameterValue(
+                    _("Cannot change network_interface to invalid value "
+                      "%(n_interface)s for node %(node)s, valid interfaces "
+                      "are: %(valid_choices)s.") % {
+                        'n_interface': net_iface, 'node': node_obj.uuid,
+                        'valid_choices': CONF.enabled_network_interfaces,
+                    })
 
         driver_name = node_obj.driver if 'driver' in delta else None
         with task_manager.acquire(context, node_id, shared=False,
@@ -142,8 +164,8 @@ class ConductorManager(base_manager.BaseConductorManager):
 
         """
         LOG.debug("RPC change_node_power_state called for node %(node)s. "
-                  "The desired new state is %(state)s."
-                  % {'node': node_id, 'state': new_state})
+                  "The desired new state is %(state)s.",
+                  {'node': node_id, 'state': new_state})
 
         with task_manager.acquire(context, node_id, shared=False,
                                   purpose='changing node power state') as task:
@@ -1558,8 +1580,7 @@ class ConductorManager(base_manager.BaseConductorManager):
                  async task
         """
         LOG.debug('RPC set_console_mode called for node %(node)s with '
-                  'enabled %(enabled)s' % {'node': node_id,
-                                           'enabled': enabled})
+                  'enabled %(enabled)s', {'node': node_id, 'enabled': enabled})
 
         with task_manager.acquire(context, node_id, shared=False,
                                   purpose='setting console mode') as task:
@@ -1609,7 +1630,8 @@ class ConductorManager(base_manager.BaseConductorManager):
     @messaging.expected_exceptions(exception.NodeLocked,
                                    exception.FailedToUpdateMacOnPort,
                                    exception.MACAlreadyExists,
-                                   exception.InvalidState)
+                                   exception.InvalidState,
+                                   exception.FailedToUpdateDHCPOptOnPort)
     def update_port(self, context, port_obj):
         """Update a port.
 
@@ -1630,6 +1652,17 @@ class ConductorManager(base_manager.BaseConductorManager):
         with task_manager.acquire(context, port_obj.node_id,
                                   purpose='port update') as task:
             node = task.node
+
+            # Only allow updating MAC addresses for active nodes if maintenance
+            # mode is on.
+            if ((node.provision_state == states.ACTIVE or node.instance_uuid)
+                and 'address' in port_obj.obj_what_changed() and
+                not node.maintenance):
+                    action = _("Cannot update hardware address for port "
+                               "%(port)s as node %(node)s is active or has "
+                               "instance UUID assigned")
+                    raise exception.InvalidState(action % {'node': node.uuid,
+                                                           'port': port_uuid})
 
             # If port update is modifying the portgroup membership of the port
             # or modifying the local_link_connection or pxe_enabled flags then
@@ -1670,6 +1703,31 @@ class ConductorManager(base_manager.BaseConductorManager):
                         "port %(port)s when attempting to update port MAC "
                         "address."),
                         {'port': port_uuid, 'instance': node.instance_uuid})
+
+            if 'extra' in port_obj.obj_what_changed():
+                orignal_port = objects.Port.get_by_id(context, port_obj.id)
+                updated_client_id = port_obj.extra.get('client-id')
+                if (orignal_port.extra.get('client-id') !=
+                    updated_client_id):
+                    vif = port_obj.extra.get('vif_port_id')
+                    # DHCP Option with opt_value=None will remove it
+                    # from the neutron port
+                    if vif:
+                        api = dhcp_factory.DHCPFactory()
+                        client_id_opt = {'opt_name': 'client-id',
+                                         'opt_value': updated_client_id}
+
+                        api.provider.update_port_dhcp_opts(
+                            vif, [client_id_opt], token=context.auth_token)
+                    # Log warning if there is no vif_port_id and an instance
+                    # is associated with the node.
+                    elif node.instance_uuid:
+                        LOG.warning(_LW(
+                            "No VIF found for instance %(instance)s "
+                            "port %(port)s when attempting to update port "
+                            "client-id."),
+                            {'port': port_uuid,
+                             'instance': node.instance_uuid})
 
             port_obj.save()
 
@@ -2504,8 +2562,8 @@ def _do_inspect_hardware(task):
 
     if new_state == states.MANAGEABLE:
         task.process_event('done')
-        LOG.info(_LI('Successfully inspected node %(node)s')
-                 % {'node': node.uuid})
+        LOG.info(_LI('Successfully inspected node %(node)s'),
+                 {'node': node.uuid})
     elif new_state != states.INSPECTING:
         error = (_("During inspection, driver returned unexpected "
                    "state %(state)s") % {'state': new_state})

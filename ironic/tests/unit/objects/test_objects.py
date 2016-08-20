@@ -306,15 +306,15 @@ class _TestObject(object):
     def test_get(self):
         obj = MyObj(self.context, foo=1)
         # Foo has value, should not get the default
-        self.assertEqual(obj.get('foo', 2), 1)
+        self.assertEqual(1, obj.get('foo', 2))
         # Foo has value, should return the value without error
-        self.assertEqual(obj.get('foo'), 1)
+        self.assertEqual(1, obj.get('foo'))
         # Bar is not loaded, so we should get the default
-        self.assertEqual(obj.get('bar', 'not-loaded'), 'not-loaded')
+        self.assertEqual('not-loaded', obj.get('bar', 'not-loaded'))
         # Bar without a default should lazy-load
-        self.assertEqual(obj.get('bar'), 'loaded!')
+        self.assertEqual('loaded!', obj.get('bar'))
         # Bar now has a default, but loaded value should be returned
-        self.assertEqual(obj.get('bar', 'not-loaded'), 'loaded!')
+        self.assertEqual('loaded!', obj.get('bar', 'not-loaded'))
         # Invalid attribute should raise AttributeError
         self.assertRaises(AttributeError, obj.get, 'nothing')
         # ...even with a default
@@ -371,8 +371,8 @@ class _TestObject(object):
         current_obj.foo = 2
         current_obj.bar = 'current.bar'
         obj.obj_refresh(current_obj)
-        self.assertEqual(obj.foo, 2)
-        self.assertEqual(obj.bar, 'current.bar')
+        self.assertEqual(2, obj.foo)
+        self.assertEqual('current.bar', obj.bar)
 
     def test_obj_constructor(self):
         obj = MyObj(self.context, foo=123, bar='abc')
@@ -404,7 +404,7 @@ class TestObject(_LocalTest, _TestObject):
 # version bump. It is md5 hash of object fields and remotable methods.
 # The fingerprint values should only be changed if there is a version bump.
 expected_object_fingerprints = {
-    'Node': '1.16-2a6646627cb937f083f428f5d54e6458',
+    'Node': '1.18-37a1d39ba8a4957f505dda936ac9146b',
     'MyObj': '1.5-4f5efe8f0fcaf182bbe1c7fe3ba858db',
     'Chassis': '1.3-d656e039fd8ae9f34efc232ab3980905',
     'Port': '1.6-609504503d68982a10f495659990084b',

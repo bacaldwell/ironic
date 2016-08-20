@@ -38,10 +38,12 @@ Administrator's Guide
   drivers/ipa
   deploy/drivers
   deploy/cleaning
+  deploy/multitenancy
   deploy/raid
   deploy/inspection
   deploy/security
   deploy/adoption
+  deploy/api-audit-support
   deploy/troubleshooting
   Release Notes <http://docs.openstack.org/releasenotes/ironic/>
   Dashboard (horizon) plugin <http://docs.openstack.org/developer/ironic-ui/>
@@ -68,6 +70,8 @@ Developer's Guide
   dev/code-contribution-guide
   dev/dev-quickstart
   dev/vendor-passthru
+  dev/ironic-multitenant-networking
+
   dev/faq
 
 Indices and tables

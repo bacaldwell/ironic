@@ -31,7 +31,6 @@ from ironic.common import boot_devices
 from ironic.common import dhcp_factory
 from ironic.common import exception
 from ironic.common import image_service
-from ironic.common import keystone
 from ironic.common import states
 from ironic.common import utils as common_utils
 from ironic.conductor import task_manager
@@ -40,6 +39,7 @@ from ironic.drivers.modules import agent_client
 from ironic.drivers.modules import deploy_utils as utils
 from ironic.drivers.modules import image_cache
 from ironic.drivers.modules import pxe
+from ironic.drivers import utils as driver_utils
 from ironic.tests import base as tests_base
 from ironic.tests.unit.conductor import mgr_utils
 from ironic.tests.unit.db import base as db_base
@@ -1215,13 +1215,14 @@ class OtherFunctionTestCase(db_base.DbTestCase):
 
     def test_parse_root_device_hints(self):
         self.node.properties['root_device'] = {
-            'wwn': 123456, 'model': 'foo-model', 'size': 123,
+            'wwn': '123456', 'model': 'foo-model', 'size': 123,
             'serial': 'foo-serial', 'vendor': 'foo-vendor', 'name': '/dev/sda',
-            'wwn_with_extension': 123456111, 'wwn_vendor_extension': 111,
+            'wwn_with_extension': '123456111', 'wwn_vendor_extension': '111',
+            'rotational': True,
         }
-        expected = ('model=foo-model,name=/dev/sda,serial=foo-serial,size=123,'
-                    'vendor=foo-vendor,wwn=123456,wwn_vendor_extension=111,'
-                    'wwn_with_extension=123456111')
+        expected = ('model=foo-model,name=/dev/sda,rotational=True,'
+                    'serial=foo-serial,size=123,vendor=foo-vendor,wwn=123456,'
+                    'wwn_vendor_extension=111,wwn_with_extension=123456111')
         result = utils.parse_root_device_hints(self.node)
         self.assertEqual(expected, result)
 
@@ -1243,6 +1244,11 @@ class OtherFunctionTestCase(db_base.DbTestCase):
 
     def test_parse_root_device_hints_invalid_size(self):
         self.node.properties['root_device'] = {'size': 'not-int'}
+        self.assertRaises(exception.InvalidParameterValue,
+                          utils.parse_root_device_hints, self.node)
+
+    def test_parse_root_device_hints_invalid_rotational(self):
+        self.node.properties['root_device'] = {'rotational': 'not-boolean'}
         self.assertRaises(exception.InvalidParameterValue,
                           utils.parse_root_device_hints, self.node)
 
@@ -1270,7 +1276,8 @@ class OtherFunctionTestCase(db_base.DbTestCase):
             else:
                 self.assertFalse(mock_log.called)
 
-    def test_set_failed_state(self):
+    @mock.patch.object(driver_utils, 'collect_ramdisk_logs', autospec=True)
+    def test_set_failed_state(self, mock_collect):
         exc_state = exception.InvalidState('invalid state')
         exc_param = exception.InvalidParameterValue('invalid parameter')
         mock_call = mock.call(mock.ANY)
@@ -1285,8 +1292,10 @@ class OtherFunctionTestCase(db_base.DbTestCase):
         self._test_set_failed_state(event_value=iter([exc_state] * len(calls)),
                                     power_value=iter([exc_param] * len(calls)),
                                     log_calls=calls)
+        self.assertEqual(4, mock_collect.call_count)
 
-    def test_set_failed_state_no_poweroff(self):
+    @mock.patch.object(driver_utils, 'collect_ramdisk_logs', autospec=True)
+    def test_set_failed_state_no_poweroff(self, mock_collect):
         cfg.CONF.set_override('power_off_after_deploy_failure', False,
                               'deploy')
         exc_state = exception.InvalidState('invalid state')
@@ -1303,6 +1312,21 @@ class OtherFunctionTestCase(db_base.DbTestCase):
         self._test_set_failed_state(event_value=iter([exc_state] * len(calls)),
                                     power_value=iter([exc_param] * len(calls)),
                                     log_calls=calls, poweroff=False)
+        self.assertEqual(4, mock_collect.call_count)
+
+    @mock.patch.object(driver_utils, 'collect_ramdisk_logs', autospec=True)
+    def test_set_failed_state_collect_deploy_logs(self, mock_collect):
+        for opt in ('always', 'on_failure'):
+            cfg.CONF.set_override('deploy_logs_collect', opt, 'agent')
+            self._test_set_failed_state()
+            mock_collect.assert_called_once_with(mock.ANY)
+            mock_collect.reset_mock()
+
+    @mock.patch.object(driver_utils, 'collect_ramdisk_logs', autospec=True)
+    def test_set_failed_state_collect_deploy_logs_never(self, mock_collect):
+        cfg.CONF.set_override('deploy_logs_collect', 'never', 'agent')
+        self._test_set_failed_state()
+        self.assertFalse(mock_collect.called)
 
     def test_get_boot_option(self):
         self.node.instance_info = {'capabilities': '{"boot_option": "local"}'}
@@ -1375,6 +1399,42 @@ class OtherFunctionTestCase(db_base.DbTestCase):
         utils.warn_about_unsafe_shred_parameters()
         self.assertTrue(log_mock.warning.called)
 
+    @mock.patch.object(utils, '_get_ironic_session')
+    @mock.patch('ironic.common.keystone.get_service_url')
+    def test_get_ironic_api_url_from_config(self, mock_get_url, mock_ks):
+        mock_sess = mock.Mock()
+        mock_ks.return_value = mock_sess
+        fake_api_url = 'http://foo/'
+        mock_get_url.side_effect = exception.KeystoneFailure
+        self.config(api_url=fake_api_url, group='conductor')
+        url = utils.get_ironic_api_url()
+        # also checking for stripped trailing slash
+        self.assertEqual(fake_api_url[:-1], url)
+        self.assertFalse(mock_get_url.called)
+
+    @mock.patch.object(utils, '_get_ironic_session')
+    @mock.patch('ironic.common.keystone.get_service_url')
+    def test_get_ironic_api_url_from_keystone(self, mock_get_url, mock_ks):
+        mock_sess = mock.Mock()
+        mock_ks.return_value = mock_sess
+        fake_api_url = 'http://foo/'
+        mock_get_url.return_value = fake_api_url
+        self.config(api_url=None, group='conductor')
+        url = utils.get_ironic_api_url()
+        # also checking for stripped trailing slash
+        self.assertEqual(fake_api_url[:-1], url)
+        mock_get_url.assert_called_with(mock_sess)
+
+    @mock.patch.object(utils, '_get_ironic_session')
+    @mock.patch('ironic.common.keystone.get_service_url')
+    def test_get_ironic_api_url_fail(self, mock_get_url, mock_ks):
+        mock_sess = mock.Mock()
+        mock_ks.return_value = mock_sess
+        mock_get_url.side_effect = exception.KeystoneFailure()
+        self.config(api_url=None, group='conductor')
+        self.assertRaises(exception.InvalidParameterValue,
+                          utils.get_ironic_api_url)
+
 
 class VirtualMediaDeployUtilsTestCase(db_base.DbTestCase):
 
@@ -1389,7 +1449,7 @@ class VirtualMediaDeployUtilsTestCase(db_base.DbTestCase):
         obj_utils.create_test_port(
             self.context, node_id=self.node.id, address='aa:bb:cc:dd:ee:ff',
             uuid=uuidutils.generate_uuid(),
-            extra={'vif_port_id': 'test-vif-A'}, driver='iscsi_ilo')
+            extra={'vif_port_id': 'test-vif-A'})
         with task_manager.acquire(self.context, self.node.uuid,
                                   shared=False) as task:
             address = utils.get_single_nic_with_vif_port_id(task)
@@ -1399,8 +1459,7 @@ class VirtualMediaDeployUtilsTestCase(db_base.DbTestCase):
         obj_utils.create_test_port(
             self.context, node_id=self.node.id, address='aa:bb:cc:dd:ee:ff',
             uuid=uuidutils.generate_uuid(),
-            internal_info={'cleaning_vif_port_id': 'test-vif-A'},
-            driver='iscsi_ilo')
+            internal_info={'cleaning_vif_port_id': 'test-vif-A'})
         with task_manager.acquire(self.context, self.node.uuid,
                                   shared=False) as task:
             address = utils.get_single_nic_with_vif_port_id(task)
@@ -1410,8 +1469,7 @@ class VirtualMediaDeployUtilsTestCase(db_base.DbTestCase):
         obj_utils.create_test_port(
             self.context, node_id=self.node.id, address='aa:bb:cc:dd:ee:ff',
             uuid=uuidutils.generate_uuid(),
-            internal_info={'provisioning_vif_port_id': 'test-vif-A'},
-            driver='iscsi_ilo')
+            internal_info={'provisioning_vif_port_id': 'test-vif-A'})
         with task_manager.acquire(self.context, self.node.uuid,
                                   shared=False) as task:
             address = utils.get_single_nic_with_vif_port_id(task)
@@ -1793,6 +1851,8 @@ class AgentMethodsTestCase(db_base.DbTestCase):
     def test_prepare_inband_cleaning_ports_provider_does_not_create(
             self, dhcp_factory_mock, add_clean_net_mock):
         self.config(group='dhcp', dhcp_provider='my_shiny_dhcp_provider')
+        self.node.network_interface = 'noop'
+        self.node.save()
         dhcp_provider = dhcp_factory_mock.return_value.provider
         del dhcp_provider.delete_cleaning_ports
         del dhcp_provider.create_cleaning_ports
@@ -1840,6 +1900,8 @@ class AgentMethodsTestCase(db_base.DbTestCase):
     def test_tear_down_inband_cleaning_ports_provider_does_not_delete(
             self, dhcp_factory_mock, rm_clean_net_mock):
         self.config(group='dhcp', dhcp_provider='my_shiny_dhcp_provider')
+        self.node.network_interface = 'noop'
+        self.node.save()
         dhcp_provider = dhcp_factory_mock.return_value.provider
         del dhcp_provider.delete_cleaning_ports
         with task_manager.acquire(
@@ -1913,11 +1975,12 @@ class AgentMethodsTestCase(db_base.DbTestCase):
         self.assertEqual('fake_agent', options['ipa-driver-name'])
         self.assertEqual(0, options['coreos.configdrive'])
 
-    @mock.patch.object(keystone, 'get_service_url', autospec=True)
-    def test_build_agent_options_keystone(self, get_url_mock):
-
+    @mock.patch.object(utils, '_get_ironic_session')
+    def test_build_agent_options_keystone(self, session_mock):
         self.config(api_url=None, group='conductor')
-        get_url_mock.return_value = 'api-url'
+        sess = mock.Mock()
+        sess.get_endpoint.return_value = 'api-url'
+        session_mock.return_value = sess
         options = utils.build_agent_options(self.node)
         self.assertEqual('api-url', options['ipa-api-url'])
         self.assertEqual('fake_agent', options['ipa-driver-name'])
